@@ -29,15 +29,49 @@ export function GenericToolView({
   const Icon = getToolIcon(name);
 
   // Format content for display
-  const formatContent = (content: string | null) => {
+  const formatContent = (content: string | null | any) => {
     if (!content) return null;
 
+    // If content is already an object (not a string), stringify it
+    if (typeof content !== 'string') {
+      return JSON.stringify(content, null, 2);
+    }
+
     try {
-      // Try to parse as JSON for pretty formatting
-      const parsedJson = JSON.parse(content);
-      return JSON.stringify(parsedJson, null, 2);
+      // First attempt: try parsing as is (in case it's a regular JSON string)
+      try {
+        const parsedJson = JSON.parse(content);
+        return JSON.stringify(parsedJson, null, 2);
+      } catch (e) {
+        // Second attempt: handle double-escaped JSON
+        // This happens when content is a string that contains a JSON string
+        // e.g. "{\"key\":\"value\"}" instead of {"key":"value"}
+        try {
+          // Try to detect if this is a double-escaped JSON string
+          if (content.startsWith('"') && content.endsWith('"') && content.includes('\\\"')) {
+            // Parse the outer JSON string to get the inner JSON string
+            const innerJsonString = JSON.parse(content);
+            if (typeof innerJsonString === 'string') {
+              try {
+                // Try to parse the inner JSON string
+                const innerJson = JSON.parse(innerJsonString);
+                return JSON.stringify(innerJson, null, 2);
+              } catch {
+                // If inner string isn't valid JSON, just return the unescaped string
+                return innerJsonString;
+              }
+            }
+          }
+        } catch {
+          // Ignore errors in the double-escape handling
+        }
+      }
+      
+      // If all parsing attempts fail, return as is
+      return content;
     } catch (e) {
-      // If not valid JSON, return as is
+      // If any error occurs in the overall process, return as is
+      console.warn('Error formatting tool content:', e);
       return content;
     }
   };

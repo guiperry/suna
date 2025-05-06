@@ -13,9 +13,20 @@ export type MarkdownProps = {
   components?: Partial<Components>;
 };
 
-function parseMarkdownIntoBlocks(markdown: string): string[] {
-  const tokens = marked.lexer(markdown);
-  return tokens.map((token: any) => token.raw);
+function parseMarkdownIntoBlocks(markdown: string | any): string[] {
+  // Handle non-string inputs
+  if (typeof markdown !== 'string') {
+    console.warn('Non-string content passed to Markdown component:', markdown);
+    return [typeof markdown === 'object' ? JSON.stringify(markdown) : String(markdown)];
+  }
+  
+  try {
+    const tokens = marked.lexer(markdown);
+    return tokens.map((token: any) => token.raw);
+  } catch (error) {
+    console.error('Error parsing markdown:', error);
+    return [markdown]; // Return original content as a single block
+  }
 }
 
 function extractLanguage(className?: string): string {
@@ -161,9 +172,12 @@ const MemoizedMarkdownBlock = memo(
     content: string;
     components?: Partial<Components>;
   }) {
+    // Ensure content is a valid string to avoid ReactMarkdown errors
+    const safeContent = typeof content === 'string' ? content : String(content || '');
+    
     return (
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-        {content}
+        {safeContent}
       </ReactMarkdown>
     );
   },
@@ -182,7 +196,15 @@ function MarkdownComponent({
 }: MarkdownProps) {
   const generatedId = useId();
   const blockId = id ?? generatedId;
-  const blocks = useMemo(() => parseMarkdownIntoBlocks(children), [children]);
+  
+  // Ensure children is a string
+  const contentString = typeof children === 'string' 
+    ? children 
+    : typeof children === 'object'
+      ? JSON.stringify(children)
+      : String(children || '');
+  
+  const blocks = useMemo(() => parseMarkdownIntoBlocks(contentString), [contentString]);
 
   return (
     <div

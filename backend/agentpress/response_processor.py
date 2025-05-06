@@ -385,7 +385,17 @@ class ResponseProcessor:
 
                 if last_assistant_message_object:
                     # Yield the complete saved object, adding stream_status metadata just for yield
-                    yield_metadata = json.loads(last_assistant_message_object.get('metadata', '{}'))
+                    # Handle metadata which can now be a dict or a JSON string
+                    metadata = last_assistant_message_object.get('metadata', {})
+                    if isinstance(metadata, str):
+                        try:
+                            yield_metadata = json.loads(metadata)
+                        except json.JSONDecodeError:
+                            yield_metadata = {}
+                    else:
+                        # It's already a dict
+                        yield_metadata = metadata
+                        
                     yield_metadata['stream_status'] = 'complete'
                     yield {**last_assistant_message_object, 'metadata': json.dumps(yield_metadata)}
                 else:

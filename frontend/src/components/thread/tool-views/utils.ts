@@ -52,7 +52,22 @@ export function getToolTitle(toolName: string): string {
 // Helper to extract command from execute-command content
 export function extractCommand(content: string | undefined): string | null {
   if (!content) return null;
-  const commandMatch = content.match(
+  
+  // Parse the content safely
+  const parsedContent = safeParseContent(content);
+  
+  // Handle different content formats
+  let textToSearch = '';
+  if (typeof parsedContent === 'string') {
+    textToSearch = parsedContent;
+  } else if (parsedContent && typeof parsedContent === 'object') {
+    textToSearch = parsedContent.content || JSON.stringify(parsedContent);
+  } else {
+    textToSearch = String(content);
+  }
+  
+  // Look for execute-command tag in the content
+  const commandMatch = textToSearch.match(
     /<execute-command>([\s\S]*?)<\/execute-command>/,
   );
   return commandMatch ? commandMatch[1].trim() : null;
@@ -64,47 +79,37 @@ export function extractCommandOutput(
 ): string | null {
   if (!content) return null;
 
-  try {
-    // First try to parse the JSON content
-    const parsedContent = JSON.parse(content);
-    if (parsedContent.content && typeof parsedContent.content === 'string') {
-      // Look for a tool_result tag
-      const toolResultMatch = parsedContent.content.match(
-        /<tool_result>\s*<execute-command>([\s\S]*?)<\/execute-command>\s*<\/tool_result>/,
-      );
-      if (toolResultMatch) {
-        return toolResultMatch[1].trim();
-      }
-
-      // Look for output field in a ToolResult pattern
-      const outputMatch = parsedContent.content.match(
-        /ToolResult\(.*?output='([\s\S]*?)'.*?\)/,
-      );
-      if (outputMatch) {
-        return outputMatch[1];
-      }
-
-      // Return the content itself as a fallback
-      return parsedContent.content;
-    }
-  } catch (e) {
-    // If JSON parsing fails, try regex directly
-    const toolResultMatch = content.match(
-      /<tool_result>\s*<execute-command>([\s\S]*?)<\/execute-command>\s*<\/tool_result>/,
-    );
-    if (toolResultMatch) {
-      return toolResultMatch[1].trim();
-    }
-
-    const outputMatch = content.match(
-      /ToolResult\(.*?output='([\s\S]*?)'.*?\)/,
-    );
-    if (outputMatch) {
-      return outputMatch[1];
-    }
+  // Parse the content safely
+  const parsedContent = safeParseContent(content);
+  
+  // Handle different content formats
+  let textToSearch = '';
+  if (typeof parsedContent === 'string') {
+    textToSearch = parsedContent;
+  } else if (parsedContent && typeof parsedContent === 'object') {
+    textToSearch = parsedContent.content || JSON.stringify(parsedContent);
+  } else {
+    textToSearch = String(content);
+  }
+  
+  // Look for tool_result tag with execute-command
+  const toolResultMatch = textToSearch.match(
+    /<tool_result>\s*<execute-command>([\s\S]*?)<\/execute-command>\s*<\/tool_result>/,
+  );
+  if (toolResultMatch) {
+    return toolResultMatch[1].trim();
   }
 
-  return content;
+  // Look for output field in a ToolResult pattern
+  const outputMatch = textToSearch.match(
+    /ToolResult\(.*?output='([\s\S]*?)'.*?\)/,
+  );
+  if (outputMatch) {
+    return outputMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
+  }
+  
+  // If no matches found, return the whole content
+  return typeof textToSearch === 'string' ? textToSearch : JSON.stringify(textToSearch);
 }
 
 // Helper to extract the exit code from tool result
@@ -126,21 +131,24 @@ export function extractExitCode(content: string | undefined): number | null {
 export function extractFilePath(content: string | undefined): string | null {
   if (!content) return null;
 
-  // Try to parse JSON content first
-  try {
-    const parsedContent = JSON.parse(content);
-    if (parsedContent.content && typeof parsedContent.content === 'string') {
-      content = parsedContent.content;
-    }
-  } catch (e) {
-    // Continue with original content if parsing fails
+  // Parse content safely
+  const parsedContent = safeParseContent(content);
+  
+  // Process content based on its type
+  let textToSearch = '';
+  if (typeof parsedContent === 'string') {
+    textToSearch = parsedContent;
+  } else if (parsedContent && typeof parsedContent === 'object') {
+    textToSearch = parsedContent.content || JSON.stringify(parsedContent);
+  } else {
+    textToSearch = String(content);
   }
 
   // Look for file_path in different formats
   const filePathMatch =
-    content.match(/file_path=["']([\s\S]*?)["']/i) ||
-    content.match(/target_file=["']([\s\S]*?)["']/i) ||
-    content.match(/path=["']([\s\S]*?)["']/i);
+    textToSearch.match(/file_path=["']([\s\S]*?)["']/i) ||
+    textToSearch.match(/target_file=["']([\s\S]*?)["']/i) ||
+    textToSearch.match(/path=["']([\s\S]*?)["']/i);
   if (filePathMatch) {
     const path = filePathMatch[1].trim();
     // Handle newlines and return first line if multiple lines
@@ -149,26 +157,26 @@ export function extractFilePath(content: string | undefined): string | null {
 
   // Look for file_path in XML-like tags
   const xmlFilePathMatch =
-    content.match(/<str-replace\s+file_path=["']([\s\S]*?)["']/i) ||
-    content.match(/<delete[^>]*file_path=["']([\s\S]*?)["']/i) ||
-    content.match(/<delete-file[^>]*>([^<]+)<\/delete-file>/i);
+    textToSearch.match(/<str-replace\s+file_path=["']([\s\S]*?)["']/i) ||
+    textToSearch.match(/<delete[^>]*file_path=["']([\s\S]*?)["']/i) ||
+    textToSearch.match(/<delete-file[^>]*>([^<]+)<\/delete-file>/i);
   if (xmlFilePathMatch) {
     return cleanFilePath(xmlFilePathMatch[1]);
   }
 
   // Look for file paths in delete operations in particular
   if (
-    content.toLowerCase().includes('delete') ||
-    content.includes('delete-file')
+    textToSearch.toLowerCase().includes('delete') ||
+    textToSearch.includes('delete-file')
   ) {
     // Look for patterns like "Deleting file: path/to/file.txt"
-    const deletePathMatch = content.match(
+    const deletePathMatch = textToSearch.match(
       /(?:delete|remove|deleting)\s+(?:file|the file)?:?\s+["']?([\w\-./\\]+\.\w+)["']?/i,
     );
     if (deletePathMatch) return cleanFilePath(deletePathMatch[1]);
 
     // Look for isolated file paths with extensions
-    const fileMatch = content.match(/["']?([\w\-./\\]+\.\w+)["']?/);
+    const fileMatch = textToSearch.match(/["']?([\w\-./\\]+\.\w+)["']?/);
     if (fileMatch) return cleanFilePath(fileMatch[1]);
   }
 
@@ -207,21 +215,47 @@ export function extractStrReplaceContent(content: string | undefined): {
   };
 }
 
-// Helper to extract file content from create-file or file-rewrite
+// Helper to extract file content from create-file or full-file-rewrite
 export function extractFileContent(
   content: string | undefined,
   toolType: 'create-file' | 'full-file-rewrite',
 ): string | null {
   if (!content) return null;
 
-  const tagName =
-    toolType === 'create-file' ? 'create-file' : 'full-file-rewrite';
-  const contentMatch = content.match(
-    new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>`, 'i'),
-  );
+  // Parse content safely
+  const parsedContent = safeParseContent(content);
+  
+  // Process content based on its type
+  let textToSearch = '';
+  if (typeof parsedContent === 'string') {
+    textToSearch = parsedContent;
+  } else if (parsedContent && typeof parsedContent === 'object') {
+    textToSearch = parsedContent.content || JSON.stringify(parsedContent);
+  } else {
+    textToSearch = String(content);
+  }
 
-  if (contentMatch && contentMatch[1]) {
-    return processFileContent(contentMatch[1]);
+  // Look for content inside the appropriate tag
+  const tagRegex = new RegExp(
+    `<${toolType}[^>]*>[\\s\\S]*?\\n([\\s\\S]*?)<\\/${toolType}>`,
+    'i',
+  );
+  const match = textToSearch.match(tagRegex);
+  if (match && match[1]) {
+    return processFileContent(match[1]);
+  }
+
+  // For cases where the tag is self-closing with content attribute
+  const attrMatch = textToSearch.match(
+    new RegExp(`<${toolType}[^>]*content=["']([\\s\\S]*?)["'][^>]*>`, 'i'),
+  );
+  if (attrMatch && attrMatch[1]) {
+    return processFileContent(attrMatch[1]);
+  }
+
+  // Fallback to looking for content field attribute in JSON structures
+  if (typeof parsedContent === 'object' && parsedContent?.content_field) {
+    return processFileContent(parsedContent.content_field);
   }
 
   return null;
@@ -867,5 +901,80 @@ export function getToolComponent(toolName: string): string {
     // Default
     default:
       return 'GenericToolView';
+  }
+}
+
+/**
+ * Safe content parser for tool views that handles multiple formats:
+ * - Direct objects (when metadata is already parsed on the backend)
+ * - JSON strings (regular JSON format)
+ * - Double-escaped JSON strings (JSON strings inside JSON strings)
+ * - Plain text
+ * 
+ * @param content Content to parse which could be in various formats
+ * @param defaultValue Default value to return if parsing fails
+ * @returns Parsed content in the most appropriate format
+ */
+export function safeParseContent(content: any, defaultValue: any = null): any {
+  // Return default for null/undefined
+  if (content === null || content === undefined) {
+    return defaultValue;
+  }
+  
+  // If content is already an object (not a string), use it directly
+  if (typeof content !== 'string') {
+    // Type assertion to avoid 'never' type errors
+    const contentObj = content as Record<string, any>;
+    // Check for content property, which is common in our messages
+    if (contentObj.content !== undefined) {
+      // If content.content is a string, try to parse it (might be JSON)
+      if (typeof contentObj.content === 'string') {
+        try {
+          return JSON.parse(contentObj.content);
+        } catch (e) {
+          // If parse fails, return the string content directly
+          return contentObj.content;
+        }
+      }
+      // If content.content is not a string, return it directly
+      return contentObj.content;
+    }
+    // If no content property, return the whole object
+    return contentObj;
+  }
+  
+  // Handle string content
+  try {
+    // First, check if this is a double-escaped JSON string
+    if (content.startsWith('"') && content.endsWith('"') && content.includes('\\\"')) {
+      try {
+        // Parse the outer JSON string to get the inner string
+        const innerString = JSON.parse(content);
+        if (typeof innerString === 'string') {
+          try {
+            // Try to parse the inner string as JSON
+            return JSON.parse(innerString);
+          } catch (e) {
+            // If the inner string isn't valid JSON, return it directly
+            return innerString;
+          }
+        }
+        // If the result isn't a string, return it directly
+        return innerString;
+      } catch (e) {
+        // Failed double-escaped parsing, continue with normal parsing
+      }
+    }
+    
+    // Try to parse as regular JSON
+    try {
+      return JSON.parse(content);
+    } catch (e) {
+      // If parsing fails, return the original string
+      return content;
+    }
+  } catch (e) {
+    // If any error occurs, return the original content or default
+    return content || defaultValue;
   }
 }

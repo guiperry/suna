@@ -51,16 +51,24 @@ import { BillingErrorAlert } from '@/components/billing/usage-limit-alert';
 import { isLocalMode } from '@/lib/config';
 
 import {
-  UnifiedMessage,
+  ThreadParams,
   ParsedContent,
   ParsedMetadata,
-  ThreadParams,
 } from '@/components/thread/types';
 import {
   getToolIcon,
   extractPrimaryParam,
-  safeJsonParse,
 } from '@/components/thread/utils';
+
+/**
+ * Note about API data handling:
+ * 
+ * The backend has been updated to return metadata as direct objects instead of JSON strings.
+ * This file has been refactored to handle both formats:
+ * - We use ExtendedUnifiedMessage and ExtendedApiMessageType interfaces that accept both string and object
+ * - We use getMetadataField() and safeJsonParse() helpers to handle either format
+ * - Type assertions are used where needed to satisfy TypeScript compiler
+ */
 
 // Define the set of tags whose raw XML should be hidden during streaming
 const HIDE_STREAMING_XML_TAGS = new Set([
@@ -90,12 +98,24 @@ const HIDE_STREAMING_XML_TAGS = new Set([
   'web-search',
 ]);
 
-// Extend the base Message type with the expected database fields
-interface ApiMessageType extends BaseApiMessageType {
+// Modified to avoid name collision with imported type
+interface ExtendedUnifiedMessage {
+  message_id: string | null;
+  thread_id: string;
+  type: string;
+  is_llm_message: boolean;
+  content: string;
+  metadata: string | Record<string, any>; // Allow both string and object
+  created_at: string;
+  updated_at: string;
+}
+
+// Rename our local ApiMessageType to avoid conflicts
+interface ExtendedApiMessageType extends BaseApiMessageType {
   message_id?: string;
   thread_id?: string;
   is_llm_message?: boolean;
-  metadata?: string;
+  metadata?: string | Record<string, any>; // Allow both types
   created_at?: string;
   updated_at?: string;
 }
@@ -109,6 +129,28 @@ interface StreamingToolCall {
   xml_tag_name?: string;
 }
 
+// Add a helper function to safely handle both string and object metadata
+function getMetadataField(metadata: any, field: string, defaultValue: any = null): any {
+  if (!metadata) return defaultValue;
+  
+  // If it's already an object
+  if (typeof metadata === 'object' && !Array.isArray(metadata)) {
+    return metadata[field] !== undefined ? metadata[field] : defaultValue;
+  }
+  
+  // If it's a string, try to parse it
+  if (typeof metadata === 'string') {
+    try {
+      const parsed = JSON.parse(metadata);
+      return parsed[field] !== undefined ? parsed[field] : defaultValue;
+    } catch (e) {
+      return defaultValue;
+    }
+  }
+  
+  return defaultValue;
+}
+
 // Render Markdown content while preserving XML tags that should be displayed as tool calls
 function renderMarkdownContent(
   content: string,
@@ -119,6 +161,12 @@ function renderMarkdownContent(
   messageId: string | null,
   fileViewerHandler?: (filePath?: string) => void,
 ) {
+  // Handle null, undefined or non-string content
+  if (!content || typeof content !== 'string') {
+    console.warn('Invalid content passed to renderMarkdownContent:', content);
+    return <div className="text-muted-foreground">No content to display</div>;
+  }
+
   const xmlRegex =
     /<(?!inform\b)([a-zA-Z\-_]+)(?:\s+[^>]*)?>(?:[\s\S]*?)<\/\1>|<(?!inform\b)([a-zA-Z\-_]+)(?:\s+[^>]*)?\/>/g;
   let lastIndex = 0;
@@ -274,6 +322,20 @@ function renderAttachments(
   );
 }
 
+// Restore the safeJsonParse function with improved typing
+function safeJsonParse<T>(jsonString: any, defaultValue: T): T {
+  if (typeof jsonString !== 'string') {
+    // If it's already an object, just return it
+    return jsonString as unknown as T;
+  }
+  
+  try {
+    return JSON.parse(jsonString) as T;
+  } catch (e) {
+    return defaultValue;
+  }
+}
+
 export default function ThreadPage({
   params,
 }: {
@@ -284,7 +346,7 @@ export default function ThreadPage({
   const isMobile = useIsMobile();
 
   const router = useRouter();
-  const [messages, setMessages] = useState<UnifiedMessage[]>([]);
+  const [messages, setMessages] = useState<ExtendedUnifiedMessage[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [isSending, setIsSending] = useState(false);
@@ -418,7 +480,8 @@ export default function ThreadPage({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [toggleSidePanel, isSidePanelOpen, leftSidebarState, setLeftSidebarOpen]);
 
-  const handleNewMessageFromStream = useCallback((message: UnifiedMessage) => {
+  // Ensure we're using ExtendedUnifiedMessage in the handleNewMessageFromStream
+  const handleNewMessageFromStream = useCallback((message: ExtendedUnifiedMessage) => {
     // Log the ID of the message received from the stream
     console.log(
       `[STREAM HANDLER] Received message: ID=${message.message_id}, Type=${message.type}`,
@@ -576,70 +639,20 @@ export default function ThreadPage({
             // Log raw messages fetched from API
             console.log('[PAGE] Raw messages fetched:', messagesData);
 
-            // Map API message type to UnifiedMessage type
+            // Map API message type to our extended type
             const unifiedMessages = (messagesData || [])
               .filter((msg) => msg.type !== 'status')
-              .map((msg: ApiMessageType, index: number) => {
-                console.log(`[MAP ${index}] Processing raw message:`, msg);
-                const messageId = msg.message_id;
-                console.log(
-                  `[MAP ${index}] Accessed msg.message_id:`,
-                  messageId,
-                );
-                if (!messageId && msg.type !== 'status') {
-                  console.warn(
-                    `[MAP ${index}] Non-status message fetched from API is missing ID: Type=${msg.type}`,
-                  );
-                }
-                const threadIdMapped = msg.thread_id || threadId;
-                console.log(
-                  `[MAP ${index}] Accessed msg.thread_id (using fallback):`,
-                  threadIdMapped,
-                );
-                const typeMapped = (msg.type ||
-                  'system') as UnifiedMessage['type'];
-                console.log(
-                  `[MAP ${index}] Accessed msg.type (using fallback):`,
-                  typeMapped,
-                );
-                const isLlmMessageMapped = Boolean(msg.is_llm_message);
-                console.log(
-                  `[MAP ${index}] Accessed msg.is_llm_message:`,
-                  isLlmMessageMapped,
-                );
-                const contentMapped = msg.content || '';
-                console.log(
-                  `[MAP ${index}] Accessed msg.content (using fallback):`,
-                  contentMapped.substring(0, 50) + '...',
-                );
-                const metadataMapped = msg.metadata || '{}';
-                console.log(
-                  `[MAP ${index}] Accessed msg.metadata (using fallback):`,
-                  metadataMapped,
-                );
-                const createdAtMapped =
-                  msg.created_at || new Date().toISOString();
-                console.log(
-                  `[MAP ${index}] Accessed msg.created_at (using fallback):`,
-                  createdAtMapped,
-                );
-                const updatedAtMapped =
-                  msg.updated_at || new Date().toISOString();
-                console.log(
-                  `[MAP ${index}] Accessed msg.updated_at (using fallback):`,
-                  updatedAtMapped,
-                );
-
+              .map((msg: ExtendedApiMessageType) => {
                 return {
-                  message_id: messageId || null,
-                  thread_id: threadIdMapped,
-                  type: typeMapped,
-                  is_llm_message: isLlmMessageMapped,
-                  content: contentMapped,
-                  metadata: metadataMapped,
-                  created_at: createdAtMapped,
-                  updated_at: updatedAtMapped,
-                };
+                  message_id: msg.message_id || null,
+                  thread_id: msg.thread_id || threadId,
+                  type: (msg.type || 'system') as ExtendedUnifiedMessage['type'],
+                  is_llm_message: Boolean(msg.is_llm_message),
+                  content: msg.content || '',
+                  metadata: msg.metadata || {}, // Accept both types
+                  created_at: msg.created_at || new Date().toISOString(),
+                  updated_at: msg.updated_at || new Date().toISOString(),
+                } as ExtendedUnifiedMessage; 
               });
 
             setMessages(unifiedMessages); // Set the filtered and mapped messages
@@ -659,21 +672,16 @@ export default function ThreadPage({
             console.log('[PAGE] Assistant messages:', assistantMessages.length);
             console.log('[PAGE] Tool messages:', toolMessages.length);
 
-            // Check if tool messages have associated assistant messages
+            // Now use getMetadataField in the toolMessages.forEach section
             toolMessages.forEach((toolMsg) => {
-              try {
-                const metadata = JSON.parse(toolMsg.metadata);
-                if (metadata.assistant_message_id) {
-                  const hasAssociated = assistantMessages.some(
-                    (assMsg) =>
-                      assMsg.message_id === metadata.assistant_message_id,
-                  );
-                  console.log(
-                    `[PAGE] Tool message ${toolMsg.message_id} references assistant ${metadata.assistant_message_id} - found: ${hasAssociated}`,
-                  );
-                }
-              } catch (e) {
-                console.error('Error parsing tool message metadata:', e);
+              const assistantMsgId = getMetadataField(toolMsg.metadata, 'assistant_message_id');
+              if (assistantMsgId) {
+                const hasAssociated = assistantMessages.some(
+                  (assMsg) => assMsg.message_id === assistantMsgId
+                );
+                console.log(
+                  `[PAGE] Tool message ${toolMsg.message_id} references assistant ${assistantMsgId} - found: ${hasAssociated}`
+                );
               }
             });
 
@@ -735,13 +743,13 @@ export default function ThreadPage({
       if (!message.trim()) return;
       setIsSending(true);
 
-      const optimisticUserMessage: UnifiedMessage = {
+      const optimisticUserMessage: ExtendedUnifiedMessage = {
         message_id: `temp-${Date.now()}`,
         thread_id: threadId,
         type: 'user',
         is_llm_message: false,
         content: message,
-        metadata: '{}',
+        metadata: {} as Record<string, any>,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -913,12 +921,8 @@ export default function ThreadPage({
           !assistantMsg.message_id
         )
           return false;
-        try {
-          const metadata = JSON.parse(toolMsg.metadata);
-          return metadata.assistant_message_id === assistantMsg.message_id;
-        } catch (e) {
-          return false;
-        }
+        const metadata = getMetadataField(toolMsg.metadata, 'assistant_message_id');
+        return metadata === assistantMsg.message_id;
       });
 
       if (resultMessage) {
@@ -934,9 +938,11 @@ export default function ThreadPage({
           } else {
             // Fallback to checking for tool_calls JSON structure
             const assistantContentParsed = safeJsonParse<{
-              tool_calls?: { name: string }[];
-            }>(assistantMsg.content, {});
+              tool_calls?: Array<{ name: string }>
+            }>(assistantMsg.content, { tool_calls: [] });
+
             if (
+              assistantContentParsed && 
               assistantContentParsed.tool_calls &&
               assistantContentParsed.tool_calls.length > 0
             ) {
@@ -1102,14 +1108,8 @@ export default function ThreadPage({
         // Find the corresponding tool message using metadata
         const toolMessage = messages.find((m) => {
           if (m.type !== 'tool' || !m.metadata) return false;
-          try {
-            const metadata = safeJsonParse<ParsedMetadata>(m.metadata, {});
-            return (
-              metadata.assistant_message_id === assistantMessage.message_id
-            );
-          } catch {
-            return false;
-          }
+          const metadata = getMetadataField(m.metadata, 'assistant_message_id');
+          return metadata === assistantMessage.message_id;
         });
 
         // Check if the current toolCall 'tc' corresponds to this assistant/tool message pair
@@ -1272,16 +1272,16 @@ export default function ThreadPage({
                 console.log(
                   `[PAGE] Backup refetch completed with ${messagesData.length} messages`,
                 );
-                // Map API message type to UnifiedMessage type
+                // Map API message type to ExtendedUnifiedMessage type
                 const unifiedMessages = (messagesData || [])
                   .filter((msg) => msg.type !== 'status')
-                  .map((msg: ApiMessageType) => ({
+                  .map((msg: ExtendedApiMessageType) => ({
                     message_id: msg.message_id || null,
                     thread_id: msg.thread_id || threadId,
-                    type: (msg.type || 'system') as UnifiedMessage['type'],
+                    type: (msg.type || 'system') as ExtendedUnifiedMessage['type'],
                     is_llm_message: Boolean(msg.is_llm_message),
                     content: msg.content || '',
-                    metadata: msg.metadata || '{}',
+                    metadata: msg.metadata || {},
                     created_at: msg.created_at || new Date().toISOString(),
                     updated_at: msg.updated_at || new Date().toISOString(),
                   }));
@@ -1559,7 +1559,7 @@ export default function ThreadPage({
                   // Group messages logic
                   type MessageGroup = {
                     type: 'user' | 'assistant_group';
-                    messages: UnifiedMessage[];
+                    messages: ExtendedUnifiedMessage[];
                     key: string;
                   };
                   const groupedMessages: MessageGroup[] = [];
@@ -1616,11 +1616,11 @@ export default function ThreadPage({
                       const message = group.messages[0];
                       const messageContent = (() => {
                         try {
-                          const parsed = safeJsonParse<ParsedContent>(
+                          const parsed = safeJsonParse<{content?: string}>(
                             message.content,
-                            { content: message.content },
+                            { content: message.content }
                           );
-                          return parsed.content || message.content;
+                          return parsed && parsed.content ? parsed.content : message.content;
                         } catch {
                           return message.content;
                         }
@@ -1691,23 +1691,17 @@ export default function ThreadPage({
                                   {(() => {
                                     const toolResultsMap = new Map<
                                       string | null,
-                                      UnifiedMessage[]
+                                      ExtendedUnifiedMessage[]
                                     >();
                                     group.messages.forEach((msg) => {
                                       if (msg.type === 'tool') {
-                                        const meta =
-                                          safeJsonParse<ParsedMetadata>(
-                                            msg.metadata,
-                                            {},
-                                          );
-                                        const assistantId =
-                                          meta.assistant_message_id || null;
-                                        if (!toolResultsMap.has(assistantId)) {
-                                          toolResultsMap.set(assistantId, []);
+                                        const assistantMsgId = getMetadataField(msg.metadata, 'assistant_message_id', null);
+                                        if (assistantMsgId) {
+                                          if (!toolResultsMap.has(assistantMsgId)) {
+                                            toolResultsMap.set(assistantMsgId, []);
+                                          }
+                                          toolResultsMap.get(assistantMsgId)?.push(msg);
                                         }
-                                        toolResultsMap
-                                          .get(assistantId)
-                                          ?.push(msg);
                                       }
                                     });
 
@@ -1718,36 +1712,34 @@ export default function ThreadPage({
                                     group.messages.forEach(
                                       (message, msgIndex) => {
                                         if (message.type === 'assistant') {
-                                          const parsedContent =
-                                            safeJsonParse<ParsedContent>(
-                                              message.content,
-                                              {},
-                                            );
-                                          const msgKey =
-                                            message.message_id ||
-                                            `submsg-assistant-${msgIndex}`;
-
-                                          if (!parsedContent.content) return;
-
-                                          const renderedContent =
-                                            renderMarkdownContent(
-                                              parsedContent.content,
-                                              handleToolClick,
-                                              message.message_id,
-                                              handleOpenFileViewer,
-                                            );
-
+                                          // Parse message content 
+                                          const parsedContent = safeJsonParse<{
+                                            content?: string;
+                                            tool_calls?: Array<any>;
+                                          }>(message.content, { content: message.content });
+                                          
+                                          const msgKey = message.message_id || `submsg-assistant-${msgIndex}`;
+                                          
+                                          // Get the content to render, and ensure it's always a string
+                                          const contentToRender = typeof parsedContent?.content === 'string' 
+                                            ? parsedContent.content 
+                                            : typeof message.content === 'string' 
+                                              ? message.content 
+                                              : JSON.stringify(message.content);
+                                          
+                                          const renderedContent = renderMarkdownContent(
+                                            contentToRender,
+                                            handleToolClick,
+                                            message.message_id,
+                                            handleOpenFileViewer
+                                          );
+                                          
                                           elements.push(
-                                            <div
-                                              key={msgKey}
-                                              className={
-                                                msgIndex > 0 ? 'mt-2' : ''
-                                              }
-                                            >
+                                            <div key={msgKey} className={msgIndex > 0 ? 'mt-2' : ''}>
                                               <div className="prose prose-sm dark:prose-invert chat-markdown max-w-none [&>:first-child]:mt-0 prose-headings:mt-3">
                                                 {renderedContent}
                                               </div>
-                                            </div>,
+                                            </div>
                                           );
                                         }
                                       },
@@ -1942,7 +1934,7 @@ export default function ThreadPage({
           setAutoOpenedPanel(true);
         }}
         toolCalls={toolCalls}
-        messages={messages as ApiMessageType[]}
+        messages={messages as any} // Use type assertion to avoid conflict
         agentStatus={agentStatus}
         currentIndex={currentToolIndex}
         onNavigate={handleSidePanelNavigate}

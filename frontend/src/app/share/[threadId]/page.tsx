@@ -42,8 +42,22 @@ import {
 import {
   getToolIcon,
   extractPrimaryParam,
-  safeJsonParse,
 } from '@/components/thread/utils';
+
+// Add safeJsonParse helper function at the top of the file (after imports)
+function safeJsonParse<T>(jsonString: any, defaultValue: T): T {
+  // If it's already an object, just return it
+  if (typeof jsonString !== 'string') {
+    return jsonString as unknown as T;
+  }
+  
+  try {
+    return JSON.parse(jsonString) as T;
+  } catch (e) {
+    console.warn('Failed to parse JSON string:', jsonString?.substring(0, 100));
+    return defaultValue;
+  }
+}
 
 // Define the set of tags whose raw XML should be hidden during streaming
 const HIDE_STREAMING_XML_TAGS = new Set([
@@ -760,7 +774,7 @@ export default function ThreadPage({
           unifiedMessages.forEach((msg) => {
             if (msg.type === 'tool' && msg.metadata) {
               try {
-                const metadata = JSON.parse(msg.metadata);
+                const metadata = safeJsonParse<{ assistant_message_id?: string }>(msg.metadata, {});
                 if (metadata.assistant_message_id) {
                   assistantToolMap.set(metadata.assistant_message_id, msg);
                 }
@@ -928,7 +942,7 @@ export default function ThreadPage({
       const resultMessage = messages.find(toolMsg => {
         if (toolMsg.type !== 'tool' || !toolMsg.metadata || !assistantMsg.message_id) return false;
         try {
-          const metadata = JSON.parse(toolMsg.metadata);
+          const metadata = safeJsonParse<{ assistant_message_id?: string }>(toolMsg.metadata, {});
           return metadata.assistant_message_id === assistantMsg.message_id;
         } catch (e) {
           return false;
@@ -1085,7 +1099,7 @@ export default function ThreadPage({
       const toolMessage = messages.find(m => {
         if (m.type !== 'tool' || !m.metadata) return false;
         try {
-          const metadata = safeJsonParse<ParsedMetadata>(m.metadata, {});
+          const metadata = safeJsonParse<{ assistant_message_id?: string }>(m.metadata, {});
           return metadata.assistant_message_id === assistantMessage.message_id;
         } catch {
           return false;
@@ -1297,7 +1311,7 @@ export default function ThreadPage({
 
     if (currentMsg?.type === 'tool' && currentMsg.metadata) {
       try {
-        const metadata = safeJsonParse<ParsedMetadata>(currentMsg.metadata, {});
+        const metadata = safeJsonParse<{ assistant_message_id?: string }>(currentMsg.metadata, {});
         const assistantId = metadata.assistant_message_id;
 
         if (assistantId && messageToToolIndex[assistantId] !== undefined) {
@@ -1344,7 +1358,7 @@ export default function ThreadPage({
       const msg = currentMessages[i];
       if (msg.type === 'tool' && msg.metadata) {
         try {
-          const metadata = safeJsonParse<ParsedMetadata>(msg.metadata, {});
+          const metadata = safeJsonParse<{ assistant_message_id?: string }>(msg.metadata, {});
           const assistantId = metadata.assistant_message_id;
 
           if (assistantId) {
@@ -1741,7 +1755,7 @@ export default function ThreadPage({
                                     group.messages.forEach((msg) => {
                                       if (msg.type === 'tool') {
                                         const meta =
-                                          safeJsonParse<ParsedMetadata>(
+                                          safeJsonParse<{ assistant_message_id?: string }>(
                                             msg.metadata,
                                             {},
                                           );
