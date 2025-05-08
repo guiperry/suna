@@ -442,10 +442,7 @@ export default function ThreadPage({
 
   const handleStreamError = useCallback((errorMessage: string) => {
     console.error(`[PAGE] Stream hook error: ${errorMessage}`);
-    if (!errorMessage.toLowerCase().includes('not found') &&
-      !errorMessage.toLowerCase().includes('agent run is not running')) {
-      toast.error(`Stream Error: ${errorMessage}`);
-    }
+    toast.error(errorMessage, { duration: 15000 });
   }, []);
 
   const handleStreamClose = useCallback(() => {
@@ -944,7 +941,7 @@ export default function ThreadPage({
         try {
           const metadata = safeJsonParse<{ assistant_message_id?: string }>(toolMsg.metadata, {});
           return metadata.assistant_message_id === assistantMsg.message_id;
-        } catch (e) {
+        } catch {
           return false;
         }
       });
