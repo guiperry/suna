@@ -26,7 +26,7 @@ function normalizePath(path: string): string {
   return path;
 }
 
-const API_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '';
+const API_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000/api';
 
 /**
  * Hook for uploading files
