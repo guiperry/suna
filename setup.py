@@ -221,6 +221,25 @@ def validate_api_key(api_key, allow_empty=False):
     return bool(api_key and len(api_key) >= 10)
 
 
+def validate_supabase_jwt_key(key, allow_empty=False):
+    """Validates a Supabase JWT token (anon or service_role key)."""
+    if allow_empty and not key:
+        return True
+    # Supabase JWT keys should:
+    # 1. Start with "eyJ" (base64 encoded JSON)
+    # 2. Be at least 100 characters long (typically 200+)
+    # 3. Contain exactly 2 dots (JWT format: header.payload.signature)
+    if not key:
+        return False
+    if len(key) < 100:
+        return False
+    if not key.startswith("eyJ"):
+        return False
+    if key.count(".") != 2:
+        return False
+    return True
+
+
 def generate_encryption_key():
     """Generates a secure base64-encoded encryption key for MCP credentials."""
     # Generate 32 random bytes (256 bits)
@@ -537,38 +556,71 @@ class SetupWizard:
 
         # Check if we already have values configured
         has_existing = any(self.env_vars["supabase"].values())
-        if has_existing:
+
+        # Show detailed instructions for first-time setup
+        if not has_existing:
+            print_info("Supabase is the database backend for Suna.")
+            print_info(f"\n{Colors.BOLD}To get your Supabase credentials:{Colors.ENDC}")
+            print(f"  {Colors.CYAN}1. Visit: {Colors.GREEN}https://supabase.com/dashboard/projects{Colors.ENDC}")
+            print(f"  {Colors.CYAN}2. Create a new project (or select existing){Colors.ENDC}")
+            print(f"  {Colors.CYAN}3. Go to: {Colors.GREEN}Project Settings → API{Colors.ENDC}")
+            print(f"  {Colors.CYAN}4. Find these values:{Colors.ENDC}")
+            print(f"     {Colors.YELLOW}• Project URL{Colors.ENDC} (under 'Configuration' section)")
+            print(f"     {Colors.YELLOW}• anon/public key{Colors.ENDC} (under 'Project API keys' section)")
+            print(f"     {Colors.YELLOW}• service_role key{Colors.ENDC} (under 'Project API keys' section - keep secret!)")
+            print(f"\n  {Colors.RED}{Colors.BOLD}NOTE:{Colors.ENDC} {Colors.RED}Both keys should be long JWT tokens starting with 'eyJ'{Colors.ENDC}\n")
+            input("Press Enter to continue once you're ready...")
+        else:
             print_info(
                 "Found existing Supabase configuration. Press Enter to keep current values or type new ones."
             )
-        else:
-            print_info(
-                "You'll need a Supabase project. Visit https://supabase.com/dashboard/projects to create one."
-            )
-            print_info(
-                "In your project settings, go to 'API' to find the required information."
-            )
-            input("Press Enter to continue once you have your project details...")
 
+            # Check if existing keys are valid
+            existing_anon = self.env_vars["supabase"]["SUPABASE_ANON_KEY"]
+            existing_service = self.env_vars["supabase"]["SUPABASE_SERVICE_ROLE_KEY"]
+
+            if existing_anon and not validate_supabase_jwt_key(existing_anon):
+                print_warning(f"Your existing SUPABASE_ANON_KEY appears invalid (length: {len(existing_anon)})")
+                print_warning("It should be a JWT token starting with 'eyJ' and be 100+ characters long.")
+
+            if existing_service and not validate_supabase_jwt_key(existing_service):
+                print_warning(f"Your existing SUPABASE_SERVICE_ROLE_KEY appears invalid (length: {len(existing_service)})")
+                print_warning("It should be a JWT token starting with 'eyJ' and be 100+ characters long.")
+
+        # Collect URL
         self.env_vars["supabase"]["SUPABASE_URL"] = self._get_input(
             "Enter your Supabase Project URL (e.g., https://xyz.supabase.co): ",
             validate_url,
-            "Invalid URL format. Please enter a valid URL.",
+            "Invalid URL format. Please enter a valid URL starting with https://",
             default_value=self.env_vars["supabase"]["SUPABASE_URL"],
         )
+
+        # Collect anon key with improved validation
         self.env_vars["supabase"]["SUPABASE_ANON_KEY"] = self._get_input(
-            "Enter your Supabase anon key: ",
-            validate_api_key,
-            "This does not look like a valid key. It should be at least 10 characters.",
+            "Enter your Supabase anon/public key (JWT token): ",
+            validate_supabase_jwt_key,
+            f"{Colors.RED}Invalid Supabase anon key!{Colors.ENDC}\n"
+            f"  The key must:\n"
+            f"  • Start with 'eyJ' (it's a JWT token)\n"
+            f"  • Be at least 100 characters long (typically 200+)\n"
+            f"  • Find it in: Supabase Dashboard → Settings → API → Project API keys → anon/public",
             default_value=self.env_vars["supabase"]["SUPABASE_ANON_KEY"],
         )
+
+        # Collect service_role key with improved validation
         self.env_vars["supabase"]["SUPABASE_SERVICE_ROLE_KEY"] = self._get_input(
-            "Enter your Supabase service role key: ",
-            validate_api_key,
-            "This does not look like a valid key. It should be at least 10 characters.",
+            "Enter your Supabase service_role key (JWT token): ",
+            validate_supabase_jwt_key,
+            f"{Colors.RED}Invalid Supabase service_role key!{Colors.ENDC}\n"
+            f"  The key must:\n"
+            f"  • Start with 'eyJ' (it's a JWT token)\n"
+            f"  • Be at least 100 characters long (typically 200+)\n"
+            f"  • Find it in: Supabase Dashboard → Settings → API → Project API keys → service_role\n"
+            f"  {Colors.YELLOW}WARNING: Do NOT use 'sb_secret_...' - that's NOT the service_role key!{Colors.ENDC}",
             default_value=self.env_vars["supabase"]["SUPABASE_SERVICE_ROLE_KEY"],
         )
-        print_success("Supabase information saved.")
+
+        print_success("Supabase information saved and validated.")
 
     def collect_daytona_info(self):
         """Collects Daytona API key."""
@@ -976,6 +1028,79 @@ class SetupWizard:
             f.write(frontend_env_content)
         print_success("Created frontend/.env.local file.")
 
+    def validate_and_fix_migration_files(self):
+        """Validates and automatically fixes migration files to use proper schema prefixes."""
+        migrations_dir = os.path.join("backend", "supabase", "migrations")
+        if not os.path.exists(migrations_dir):
+            return True  # No migrations to validate
+
+        import re
+        files_fixed = []
+
+        for filename in os.listdir(migrations_dir):
+            if not filename.endswith(".sql"):
+                continue
+
+            filepath = os.path.join(migrations_dir, filename)
+            try:
+                with open(filepath, "r") as f:
+                    content = f.read()
+
+                original_content = content
+                modified = False
+
+                # Fix gen_random_bytes() calls that aren't already qualified
+                # Match gen_random_bytes( but not extensions.gen_random_bytes(
+                if re.search(r'(?<!extensions\.)gen_random_bytes\s*\(', content):
+                    content = re.sub(
+                        r'(?<!extensions\.)gen_random_bytes\s*\(',
+                        'extensions.gen_random_bytes(',
+                        content
+                    )
+                    modified = True
+
+                # Fix uuid_generate_v4() calls that aren't already qualified
+                if re.search(r'(?<!extensions\.)uuid_generate_v4\s*\(', content):
+                    content = re.sub(
+                        r'(?<!extensions\.)uuid_generate_v4\s*\(',
+                        'extensions.uuid_generate_v4(',
+                        content
+                    )
+                    modified = True
+
+                # Write back the fixed content
+                if modified:
+                    with open(filepath, "w") as f:
+                        f.write(content)
+                    files_fixed.append(filename)
+
+            except Exception as e:
+                print_warning(f"Could not process {filename}: {e}")
+
+        # Report what was fixed
+        if files_fixed:
+            print_info("Automatically fixed migration files to use proper schema prefixes:")
+            for filename in files_fixed:
+                print_success(f"  ✓ Fixed {filename}")
+            print_info("All function calls now use 'extensions.' prefix for compatibility.")
+
+        # Ensure pgcrypto extension migration exists
+        self._ensure_pgcrypto_migration(migrations_dir)
+
+        return True
+
+    def _ensure_pgcrypto_migration(self, migrations_dir):
+        """Ensures the pgcrypto extension migration file exists."""
+        pgcrypto_file = os.path.join(migrations_dir, "20240414161706_enable_pgcrypto.sql")
+
+        if not os.path.exists(pgcrypto_file):
+            print_info("Creating pgcrypto extension migration...")
+            with open(pgcrypto_file, "w") as f:
+                f.write("CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;\n")
+            print_success("Created 20240414161706_enable_pgcrypto.sql")
+
+        return True
+
     def setup_supabase_database(self):
         """Links the project to Supabase and pushes database migrations."""
         print_step(12, self.total_steps, "Setting up Supabase Database")
@@ -986,6 +1111,9 @@ class SetupWizard:
         print_info(
             "You can skip this if you've already set up your database or prefer to do it manually."
         )
+
+        # Validate and auto-fix migration files before proceeding
+        self.validate_and_fix_migration_files()
 
         # Check if Supabase info is already configured
         has_existing_supabase = any(self.env_vars["supabase"].values())

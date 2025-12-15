@@ -50,31 +50,105 @@ def check_docker_compose_up():
     return len(result.stdout.strip()) > 0
 
 
-def print_manual_instructions():
-    """Prints instructions for manually starting Suna services."""
-    print(f"\n{Colors.BLUE}{Colors.BOLD}🚀 Manual Startup Instructions{Colors.ENDC}\n")
+def start_manual_services():
+    """Automatically starts all services for manual setup."""
+    import time
 
-    print("To start Suna, you need to run these commands in separate terminals:\n")
+    print(f"\n{Colors.BLUE}{Colors.BOLD}🚀 Starting Suna Services{Colors.ENDC}\n")
 
-    print(f"{Colors.BOLD}1. Start Infrastructure (in project root):{Colors.ENDC}")
-    print(f"{Colors.CYAN}   docker compose up redis rabbitmq -d{Colors.ENDC}\n")
+    # Check if services are already running
+    backend_running = subprocess.run(
+        ["pgrep", "-f", "python api.py"],
+        capture_output=True
+    ).returncode == 0
 
-    print(f"{Colors.BOLD}2. Start Frontend (in a new terminal):{Colors.ENDC}")
-    print(f"{Colors.CYAN}   cd frontend && npm run dev{Colors.ENDC}\n")
+    frontend_running = subprocess.run(
+        ["pgrep", "-f", "next dev"],
+        capture_output=True
+    ).returncode == 0
 
-    print(f"{Colors.BOLD}3. Start Backend (in a new terminal):{Colors.ENDC}")
-    print(f"{Colors.CYAN}   cd backend && python run api.py{Colors.ENDC}\n")
+    if backend_running or frontend_running:
+        print(f"{Colors.YELLOW}⚠️  Some services are already running.{Colors.ENDC}")
+        print(f"   Backend: {'✓ Running' if backend_running else '✗ Stopped'}")
+        print(f"   Frontend: {'✓ Running' if frontend_running else '✗ Stopped'}")
+        print(f"\nUse '{Colors.CYAN}./start.py{Colors.ENDC}' again to stop all services.\n")
+        return
 
-    print(f"{Colors.BOLD}4. Start Background Worker (in a new terminal):{Colors.ENDC}")
-    print(
-        f"{Colors.CYAN}   cd backend && python run -m dramatiq run_agent_background{Colors.ENDC}\n"
+    # Start infrastructure
+    print(f"{Colors.BOLD}1. Starting Infrastructure (Redis, RabbitMQ)...{Colors.ENDC}")
+    subprocess.run(
+        ["docker", "compose", "up", "redis", "rabbitmq", "-d"],
+        shell=IS_WINDOWS,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
     )
+    print(f"{Colors.GREEN}   ✓ Infrastructure started{Colors.ENDC}\n")
+    time.sleep(2)
 
-    print("Once all services are running, access Suna at: http://localhost:3000\n")
-
-    print(
-        f"{Colors.YELLOW}💡 Tip:{Colors.ENDC} You can use '{Colors.CYAN}./start.py{Colors.ENDC}' to start/stop the infrastructure services."
+    # Start backend
+    print(f"{Colors.BOLD}2. Starting Backend API...{Colors.ENDC}")
+    backend_log = open("/tmp/suna_backend.log", "w")
+    subprocess.Popen(
+        ["bash", "-c", "cd backend && source .venv/bin/activate && python api.py"],
+        stdout=backend_log,
+        stderr=backend_log,
+        preexec_fn=os.setpgrp if not IS_WINDOWS else None
     )
+    print(f"{Colors.GREEN}   ✓ Backend starting (logs: /tmp/suna_backend.log){Colors.ENDC}\n")
+    time.sleep(3)
+
+    # Start frontend
+    print(f"{Colors.BOLD}3. Starting Frontend...{Colors.ENDC}")
+    frontend_log = open("/tmp/suna_frontend.log", "w")
+    subprocess.Popen(
+        "cd frontend && npm run dev",
+        shell=True,
+        stdout=frontend_log,
+        stderr=frontend_log,
+        preexec_fn=os.setpgrp if not IS_WINDOWS else None
+    )
+    print(f"{Colors.GREEN}   ✓ Frontend starting (logs: /tmp/suna_frontend.log){Colors.ENDC}\n")
+    time.sleep(2)
+
+    # Start background worker
+    print(f"{Colors.BOLD}4. Starting Background Worker...{Colors.ENDC}")
+    worker_log = open("/tmp/suna_worker.log", "w")
+    subprocess.Popen(
+        ["bash", "-c", "cd backend && source .venv/bin/activate && python -m dramatiq run_agent_background"],
+        stdout=worker_log,
+        stderr=worker_log,
+        preexec_fn=os.setpgrp if not IS_WINDOWS else None
+    )
+    print(f"{Colors.GREEN}   ✓ Background worker starting (logs: /tmp/suna_worker.log){Colors.ENDC}\n")
+
+    print(f"{Colors.GREEN}{Colors.BOLD}✅ All services started!{Colors.ENDC}\n")
+    print(f"{Colors.CYAN}🌐 Access Suna at: http://localhost:3000{Colors.ENDC}\n")
+    print(f"{Colors.YELLOW}💡 Tips:{Colors.ENDC}")
+    print(f"   • View logs: tail -f /tmp/suna_*.log")
+    print(f"   • Stop services: {Colors.CYAN}./start.py{Colors.ENDC}")
+    print()
+
+def stop_manual_services():
+    """Stops all manually started services."""
+    print(f"\n{Colors.BLUE}{Colors.BOLD}🛑 Stopping Suna Services{Colors.ENDC}\n")
+
+    # Stop backend
+    print(f"{Colors.BOLD}Stopping Backend...{Colors.ENDC}")
+    subprocess.run(["pkill", "-f", "python api.py"], stderr=subprocess.DEVNULL)
+
+    # Stop frontend
+    print(f"{Colors.BOLD}Stopping Frontend...{Colors.ENDC}")
+    subprocess.run(["pkill", "-f", "next dev"], stderr=subprocess.DEVNULL)
+
+    # Stop background worker
+    print(f"{Colors.BOLD}Stopping Background Worker...{Colors.ENDC}")
+    subprocess.run(["pkill", "-f", "dramatiq run_agent_background"], stderr=subprocess.DEVNULL)
+
+    # Stop infrastructure
+    print(f"{Colors.BOLD}Stopping Infrastructure...{Colors.ENDC}")
+    subprocess.run(["docker", "compose", "down"], shell=IS_WINDOWS, stdout=subprocess.DEVNULL)
+
+    print(f"\n{Colors.GREEN}✅ All services stopped.{Colors.ENDC}\n")
 
 
 def main():
@@ -96,29 +170,32 @@ def main():
         setup_method = "docker"
 
     if setup_method == "manual":
-        # For manual setup, we only manage infrastructure services (redis, rabbitmq)
-        # and show instructions for the rest
+        # For manual setup, automatically start/stop all services
         print(f"{Colors.BLUE}{Colors.BOLD}Manual Setup Detected{Colors.ENDC}")
-        print("Managing infrastructure services (Redis, RabbitMQ)...\n")
 
         force = "-f" in sys.argv
         if force:
             print("Force awakened. Skipping confirmation.")
 
-        is_infra_up = subprocess.run(
-            ["docker", "compose", "ps", "-q", "redis", "rabbitmq"],
-            capture_output=True,
-            text=True,
-            shell=IS_WINDOWS,
-        )
-        is_up = len(is_infra_up.stdout.strip()) > 0
+        # Check if any services are running
+        backend_running = subprocess.run(
+            ["pgrep", "-f", "python api.py"],
+            capture_output=True
+        ).returncode == 0
 
-        if is_up:
+        frontend_running = subprocess.run(
+            ["pgrep", "-f", "next dev"],
+            capture_output=True
+        ).returncode == 0
+
+        is_running = backend_running or frontend_running
+
+        if is_running:
             action = "stop"
-            msg = "🛑 Stop infrastructure services? [y/N] "
+            msg = "🛑 Stop all Suna services? [y/N] "
         else:
             action = "start"
-            msg = "⚡ Start infrastructure services? [Y/n] "
+            msg = "⚡ Start all Suna services? [Y/n] "
 
         if not force:
             response = input(msg).strip().lower()
@@ -132,14 +209,9 @@ def main():
                     return
 
         if action == "stop":
-            subprocess.run(["docker", "compose", "down"], shell=IS_WINDOWS)
-            print(f"\n{Colors.GREEN}✅ Infrastructure services stopped.{Colors.ENDC}")
+            stop_manual_services()
         else:
-            subprocess.run(
-                ["docker", "compose", "up", "redis", "rabbitmq", "-d"], shell=IS_WINDOWS
-            )
-            print(f"\n{Colors.GREEN}✅ Infrastructure services started.{Colors.ENDC}")
-            print_manual_instructions()
+            start_manual_services()
 
     else:  # docker setup
         print(f"{Colors.BLUE}{Colors.BOLD}Docker Setup Detected{Colors.ENDC}")
