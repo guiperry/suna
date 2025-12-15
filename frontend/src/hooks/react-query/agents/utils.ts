@@ -317,10 +317,6 @@ export const deleteAgent = async (agentId: string): Promise<void> => {
 
 export const getThreadAgent = async (threadId: string): Promise<ThreadAgentResponse> => {
   try {
-    const agentPlaygroundEnabled = await isFlagEnabled('custom_agents');
-    if (!agentPlaygroundEnabled) {
-      throw new Error('Custom agents is not enabled');
-    }
     const supabase = createClient();
     const { data: { session } } = await supabase.auth.getSession();
 

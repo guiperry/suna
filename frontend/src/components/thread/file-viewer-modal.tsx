@@ -36,7 +36,6 @@ import {
   Project,
 } from '@/lib/api';
 import { toast } from 'sonner';
-import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/components/AuthProvider';
 import {
   DropdownMenu,
@@ -52,9 +51,6 @@ import {
 } from '@/hooks/react-query/files';
 import JSZip from 'jszip';
 import { normalizeFilenameToNFC } from '@/lib/utils/unicode';
-
-// Define API_URL
-const API_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '';
 
 interface FileViewerModalProps {
   open: boolean;
@@ -138,8 +134,8 @@ export function FileViewerModal({
     }
   );
 
-  // Utility state
-  const [isUploading, setIsUploading] = useState(false);
+  // Use the useFileUpload hook
+  const { mutate: uploadFile, isPending: isUploading } = useFileUpload();
   const [isDownloading, setIsDownloading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -1126,63 +1122,27 @@ export function FileViewerModal({
 
   // Process uploaded file - Define after helpers
   const processUpload = useCallback(
-    async (event: React.ChangeEvent<HTMLInputElement>) => {
+    (event: React.ChangeEvent<HTMLInputElement>) => {
       if (!event.target.files || event.target.files.length === 0) return;
 
       const file = event.target.files[0];
-      setIsUploading(true);
+      const normalizedName = normalizeFilenameToNFC(file.name);
+      const targetPath = `${currentPath}/${normalizedName}`;
 
-      try {
-        // Normalize filename to NFC
-        const normalizedName = normalizeFilenameToNFC(file.name);
-        const uploadPath = `${currentPath}/${normalizedName}`;
-
-        const formData = new FormData();
-        // If the filename was normalized, append with the normalized name in the field name
-        // The server will use the path parameter for the actual filename
-        formData.append('file', file, normalizedName);
-        formData.append('path', uploadPath);
-
-        const supabase = createClient();
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
-
-        if (!session?.access_token) {
-          throw new Error('No access token available');
-        }
-
-        const response = await fetch(
-          `${API_URL}/sandboxes/${sandboxId}/files`,
-          {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${session.access_token}`,
-            },
-            body: formData,
+      uploadFile(
+        { sandboxId, file, targetPath },
+        {
+          onSuccess: () => {
+            if (event.target) event.target.value = '';
+            refetchFiles();
           },
-        );
-
-        if (!response.ok) {
-          const error = await response.text();
-          throw new Error(error || 'Upload failed');
-        }
-
-        // Reload the file list using React Query
-        await refetchFiles();
-
-        toast.success(`Uploaded: ${normalizedName}`);
-      } catch (error) {
-        console.error('Upload failed:', error);
-        toast.error(
-          `Upload failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      } finally {
-        setIsUploading(false);
-        if (event.target) event.target.value = '';
-      }
+          onError: () => {
+            if (event.target) event.target.value = '';
+          },
+        },
+      );
     },
-    [currentPath, sandboxId, refetchFiles],
+    [currentPath, sandboxId, uploadFile, refetchFiles],
   );
 
   // Reset file list mode when modal opens without filePathList
