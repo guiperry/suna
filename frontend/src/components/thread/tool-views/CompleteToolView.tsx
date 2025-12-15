@@ -14,8 +14,6 @@ import { ToolViewProps } from './types';
 import {
   formatTimestamp,
   getToolTitle,
-  normalizeContentToString,
-  extractToolData,
   getFileIconAndColor,
 } from './utils';
 import { cn } from '@/lib/utils';
@@ -23,82 +21,28 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Progress } from '@/components/ui/progress';
-import { Markdown } from '@/components/ui/markdown';
-
-interface CompleteContent {
-  summary?: string;
-  result?: string;
-  tasksCompleted?: string[];
-  finalOutput?: string;
-  attachments?: string[];
-}
+import { UnifiedMarkdown } from '@/components/markdown';
+import { FileAttachment } from '../file-attachment';
+import { TaskCompletedFeedback } from './shared/TaskCompletedFeedback';
 
 interface CompleteToolViewProps extends ToolViewProps {
   onFileClick?: (filePath: string) => void;
 }
 
 export function CompleteToolView({
-  name = 'complete',
-  assistantContent,
-  toolContent,
+  toolCall,
+  toolResult,
   assistantTimestamp,
   toolTimestamp,
   isSuccess = true,
   isStreaming = false,
   onFileClick,
+  project,
+  currentIndex,
+  totalCalls,
 }: CompleteToolViewProps) {
-  const [completeData, setCompleteData] = useState<CompleteContent>({});
+  // All hooks must be called unconditionally at the top
   const [progress, setProgress] = useState(0);
-
-  useEffect(() => {
-    if (assistantContent) {
-      try {
-        const contentStr = normalizeContentToString(assistantContent);
-
-        let cleanContent = contentStr
-          .replace(/<function_calls>[\s\S]*?<\/function_calls>/g, '')
-          .replace(/<invoke name="complete"[\s\S]*?<\/invoke>/g, '')
-          .trim();
-
-        const completeMatch = cleanContent.match(/<complete[^>]*>([^<]*)<\/complete>/);
-        if (completeMatch) {
-          setCompleteData(prev => ({ ...prev, summary: completeMatch[1].trim() }));
-        } else if (cleanContent) {
-          setCompleteData(prev => ({ ...prev, summary: cleanContent }));
-        }
-
-        const attachmentsMatch = contentStr.match(/attachments=["']([^"']*)["']/i);
-        if (attachmentsMatch) {
-          const attachments = attachmentsMatch[1].split(',').map(a => a.trim()).filter(a => a.length > 0);
-          setCompleteData(prev => ({ ...prev, attachments }));
-        }
-
-        const taskMatches = cleanContent.match(/- ([^\n]+)/g);
-        if (taskMatches) {
-          const tasks = taskMatches.map(task => task.replace('- ', '').trim());
-          setCompleteData(prev => ({ ...prev, tasksCompleted: tasks }));
-        }
-      } catch (e) {
-        console.error('Error parsing complete content:', e);
-      }
-    }
-  }, [assistantContent]);
-
-  useEffect(() => {
-    if (toolContent && !isStreaming) {
-      try {
-        const contentStr = normalizeContentToString(toolContent);
-        const toolResultMatch = contentStr.match(/ToolResult\([^)]*output=['"]([^'"]+)['"]/);
-        if (toolResultMatch) {
-          setCompleteData(prev => ({ ...prev, result: toolResultMatch[1] }));
-        } else {
-          setCompleteData(prev => ({ ...prev, result: contentStr }));
-        }
-      } catch (e) {
-        console.error('Error parsing tool response:', e);
-      }
-    }
-  }, [toolContent, isStreaming]);
 
   useEffect(() => {
     if (isStreaming) {
@@ -117,6 +61,59 @@ export function CompleteToolView({
     }
   }, [isStreaming]);
 
+  // Defensive check - handle cases where toolCall might be undefined
+  if (!toolCall) {
+    console.warn('CompleteToolView: toolCall is undefined. Tool views should use structured props.');
+    return null;
+  }
+
+  const name = toolCall.function_name.replace(/_/g, '-').toLowerCase();
+
+  // Extract data directly from structured props
+  const text = toolCall.arguments?.text || null;
+  const attachments = toolCall.arguments?.attachments 
+    ? (Array.isArray(toolCall.arguments.attachments) 
+        ? toolCall.arguments.attachments 
+        : typeof toolCall.arguments.attachments === 'string'
+          ? toolCall.arguments.attachments.split(',').map(a => a.trim()).filter(a => a.length > 0)
+          : [])
+    : null;
+  const follow_up_prompts = toolCall.arguments?.follow_up_prompts
+    ? (Array.isArray(toolCall.arguments.follow_up_prompts)
+        ? toolCall.arguments.follow_up_prompts.filter((p: string) => p && p.trim().length > 0)
+        : [])
+    : null;
+
+  // Extract result from toolResult
+  let resultText: string | null = null;
+  let tasksCompleted: string[] | null = null;
+
+  if (toolResult?.output) {
+    const output = toolResult.output;
+    if (typeof output === 'string') {
+      resultText = output;
+    } else if (typeof output === 'object' && output !== null) {
+      if (output.text) {
+        resultText = output.text;
+      }
+      if (output.tasks_completed && Array.isArray(output.tasks_completed)) {
+        tasksCompleted = output.tasks_completed;
+      }
+    }
+  }
+
+  const actualIsSuccess = toolResult?.success !== undefined ? toolResult.success : isSuccess;
+
+  const isImageFile = (filePath: string): boolean => {
+    const filename = filePath.split('/').pop() || '';
+    return filename.match(/\.(jpg|jpeg|png|gif|webp|svg|bmp)$/i) !== null;
+  };
+
+  const isPreviewableFile = (filePath: string): boolean => {
+    const ext = filePath.split('.').pop()?.toLowerCase() || '';
+    return ext === 'html' || ext === 'htm' || ext === 'md' || ext === 'markdown' || ext === 'csv' || ext === 'tsv';
+  };
+
   const toolTitle = getToolTitle(name) || 'Task Complete';
 
   const handleFileClick = (filePath: string) => {
@@ -126,7 +123,7 @@ export function CompleteToolView({
   };
 
   return (
-    <Card className="gap-0 flex border shadow-none border-t border-b-0 border-x-0 p-0 rounded-none flex-col h-full overflow-hidden bg-white dark:bg-zinc-950">
+    <Card className="gap-0 flex border-0 shadow-none p-0 py-0 rounded-none flex-col h-full overflow-hidden bg-card">
       <CardHeader className="h-14 bg-zinc-50/80 dark:bg-zinc-900/80 backdrop-blur-sm border-b p-2 px-4 space-y-2">
         <div className="flex flex-row items-center justify-between">
           <div className="flex items-center gap-2">
@@ -144,17 +141,17 @@ export function CompleteToolView({
             <Badge
               variant="secondary"
               className={
-                isSuccess
+                actualIsSuccess
                   ? "bg-gradient-to-b from-emerald-200 to-emerald-100 text-emerald-700 dark:from-emerald-800/50 dark:to-emerald-900/60 dark:text-emerald-300"
                   : "bg-gradient-to-b from-rose-200 to-rose-100 text-rose-700 dark:from-rose-800/50 dark:to-rose-900/60 dark:text-rose-300"
               }
             >
-              {isSuccess ? (
+              {actualIsSuccess ? (
                 <CheckCircle className="h-3.5 w-3.5 mr-1" />
               ) : (
                 <AlertTriangle className="h-3.5 w-3.5 mr-1" />
               )}
-              {isSuccess ? 'Completed' : 'Failed'}
+              {actualIsSuccess ? 'Completed' : 'Failed'}
             </Badge>
           )}
 
@@ -170,8 +167,8 @@ export function CompleteToolView({
       <CardContent className="p-0 flex-1 overflow-hidden relative">
         <ScrollArea className="h-full w-full">
           <div className="p-4 space-y-6">
-            {/* Success Animation/Icon - Only show when completed successfully */}
-            {!isStreaming && isSuccess && !completeData.summary && !completeData.tasksCompleted && !completeData.attachments && (
+            {/* Success Animation/Icon - Only show when completed successfully and no text/attachments */}
+            {!isStreaming && actualIsSuccess && !text && !attachments && !resultText && !tasksCompleted && (
               <div className="flex justify-center">
                 <div className="relative">
                   <div className="w-20 h-20 rounded-full bg-gradient-to-br from-emerald-100 to-emerald-200 dark:from-emerald-800/40 dark:to-emerald-900/60 flex items-center justify-center">
@@ -184,73 +181,109 @@ export function CompleteToolView({
               </div>
             )}
 
-            {/* Summary Section */}
-            {completeData.summary && (
+            {/* Text/Summary Section - Show during streaming and when completed */}
+            {(text || resultText) && (
               <div className="space-y-2">
-                <div className="bg-muted/50 rounded-lg p-4 border border-border">
-                  <Markdown className="text-sm prose prose-sm dark:prose-invert chat-markdown max-w-none [&>:first-child]:mt-0 prose-headings:mt-3">
-                    {completeData.summary}
-                  </Markdown>
+                <div className="bg-muted/50 rounded-2xl p-4 border border-border">
+                  <UnifiedMarkdown 
+                    content={text || resultText || ''} 
+                    className="text-sm" 
+                  />
+                  {isStreaming && (
+                    <span className="inline-block h-4 w-0.5 bg-primary ml-1 -mb-1 animate-pulse" />
+                  )}
                 </div>
               </div>
             )}
 
             {/* Attachments Section */}
-            {completeData.attachments && completeData.attachments.length > 0 && (
-              <div className="space-y-3">
+            {attachments && attachments.length > 0 ? (
+              <div className="space-y-4">
                 <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
                   <Paperclip className="h-4 w-4" />
-                  Files ({completeData.attachments.length})
+                  Files ({attachments.length})
                 </div>
-                <div className="grid grid-cols-1 gap-2">
-                  {completeData.attachments.map((attachment, index) => {
-                    const { icon: FileIcon, color, bgColor } = getFileIconAndColor(attachment);
-                    const fileName = attachment.split('/').pop() || attachment;
-                    const filePath = attachment.includes('/') ? attachment.substring(0, attachment.lastIndexOf('/')) : '';
 
-                    return (
-                      <button
-                        key={index}
-                        onClick={() => handleFileClick(attachment)}
-                        className="flex items-center gap-3 p-3 bg-muted/30 rounded-lg border border-border/50 hover:bg-muted/50 transition-colors group cursor-pointer text-left"
-                      >
-                        <div className="flex-shrink-0">
-                          <div className={cn(
-                            "w-10 h-10 rounded-lg bg-gradient-to-br flex items-center justify-center",
-                            bgColor
-                          )}>
-                            <FileIcon className={cn("h-5 w-5", color)} />
-                          </div>
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-foreground truncate">
-                            {fileName}
-                          </p>
-                          {filePath && (
-                            <p className="text-xs text-muted-foreground truncate">
-                              {filePath}
-                            </p>
+                <div className={cn(
+                  "grid gap-3",
+                  attachments.length === 1 ? "grid-cols-1" :
+                    attachments.length > 4 ? "grid-cols-1 sm:grid-cols-2 md:grid-cols-3" :
+                      "grid-cols-1 sm:grid-cols-2"
+                )}>
+                  {attachments
+                    .sort((a, b) => {
+                      const aIsImage = isImageFile(a);
+                      const bIsImage = isImageFile(b);
+                      const aIsPreviewable = isPreviewableFile(a);
+                      const bIsPreviewable = isPreviewableFile(b);
+
+                      if (aIsImage && !bIsImage) return -1;
+                      if (!aIsImage && bIsImage) return 1;
+                      if (aIsPreviewable && !bIsPreviewable) return -1;
+                      if (!aIsPreviewable && bIsPreviewable) return 1;
+                      return 0;
+                    })
+                    .map((attachment, index) => {
+                      const isImage = isImageFile(attachment);
+                      const isPreviewable = isPreviewableFile(attachment);
+                      const shouldSpanFull = (attachments!.length % 2 === 1 &&
+                        attachments!.length > 1 &&
+                        index === attachments!.length - 1);
+
+                      return (
+                        <div
+                          key={index}
+                          className={cn(
+                            "relative group",
+                            isImage ? "flex items-center justify-center h-full" : "",
+                            isPreviewable ? "w-full" : ""
                           )}
+                          style={(shouldSpanFull || isPreviewable) ? { gridColumn: '1 / -1' } : undefined}
+                        >
+                          <FileAttachment
+                            filepath={attachment}
+                            onClick={handleFileClick}
+                            sandboxId={project?.sandbox?.id}
+                            showPreview={true}
+                            className={cn(
+                              "w-full",
+                              isImage ? "h-auto min-h-[54px]" :
+                                isPreviewable ? "min-h-[240px] max-h-[400px] overflow-auto" : "h-[54px]"
+                            )}
+                            customStyle={
+                              isImage ? {
+                                width: '100%',
+                                height: 'auto',
+                                '--attachment-height': shouldSpanFull ? '240px' : '180px'
+                              } as React.CSSProperties :
+                                isPreviewable ? {
+                                  gridColumn: '1 / -1'
+                                } :
+                                  shouldSpanFull ? {
+                                    gridColumn: '1 / -1'
+                                  } : {
+                                    width: '100%'
+                                  }
+                            }
+                            collapsed={false}
+                            project={project}
+                          />
                         </div>
-                        <div className="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <ExternalLink className="h-4 w-4 text-muted-foreground" />
-                        </div>
-                      </button>
-                    );
-                  })}
+                      );
+                    })}
                 </div>
               </div>
-            )}
+            ) : null}
 
             {/* Tasks Completed Section */}
-            {completeData.tasksCompleted && completeData.tasksCompleted.length > 0 && (
+            {tasksCompleted && tasksCompleted.length > 0 && (
               <div className="space-y-3">
                 <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
                   <ListChecks className="h-4 w-4" />
                   Tasks Completed
                 </div>
                 <div className="space-y-2">
-                  {completeData.tasksCompleted.map((task, index) => (
+                  {tasksCompleted.map((task, index) => (
                     <div
                       key={index}
                       className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg border border-border/50"
@@ -259,9 +292,10 @@ export function CompleteToolView({
                         <CheckCircle className="h-4 w-4 text-emerald-500" />
                       </div>
                       <div className="flex-1 min-w-0">
-                        <Markdown className="text-sm prose prose-sm dark:prose-invert chat-markdown max-w-none [&>:first-child]:mt-0 [&>:last-child]:mb-0">
-                          {task}
-                        </Markdown>
+                        <UnifiedMarkdown 
+                          content={task} 
+                          className="text-sm" 
+                        />
                       </div>
                     </div>
                   ))}
@@ -269,8 +303,8 @@ export function CompleteToolView({
               </div>
             )}
 
-            {/* Progress Section for Streaming */}
-            {isStreaming && (
+            {/* Progress Section for Streaming - Only show if no text content */}
+            {isStreaming && !text && !resultText && (
               <div className="space-y-3">
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-muted-foreground">
@@ -285,7 +319,7 @@ export function CompleteToolView({
             )}
 
             {/* Empty State */}
-            {!completeData.summary && !completeData.result && !completeData.attachments && !completeData.tasksCompleted && !isStreaming && (
+            {!text && !attachments && !resultText && !tasksCompleted && !isStreaming && (
               <div className="flex flex-col items-center justify-center py-8 text-center">
                 <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center mb-4">
                   <CheckCircle2 className="h-8 w-8 text-muted-foreground" />
@@ -297,6 +331,18 @@ export function CompleteToolView({
                   No additional details provided
                 </p>
               </div>
+            )}
+
+            {/* Task Completed Feedback */}
+            {!isStreaming && actualIsSuccess && (
+              <TaskCompletedFeedback
+                taskSummary={text || resultText}
+                followUpPrompts={follow_up_prompts && follow_up_prompts.length > 0 ? follow_up_prompts : undefined}
+                onFollowUpClick={(prompt) => {
+                  // TODO: Handle follow-up click - could trigger a new message
+                  console.log('Follow-up clicked:', prompt);
+                }}
+              />
             )}
           </div>
         </ScrollArea>

@@ -1,10 +1,11 @@
 import { AnimatePresence, motion } from 'framer-motion';
-import { X, Plus } from 'lucide-react';
+import { X, Plus, ChevronLeft, ChevronRight } from 'lucide-react';
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
 import { FileAttachment } from './file-attachment';
 import { cn } from '@/lib/utils';
-import { Project } from '@/lib/api';
+import { Project } from '@/lib/api/threads';
 import { useState, useRef, useEffect } from 'react';
+import { Button } from '@/components/ui/button';
 import {
     Dialog,
     DialogContent,
@@ -35,6 +36,8 @@ interface AttachmentGroupProps {
     gridImageHeight?: number; // New prop for grid image height
     collapsed?: boolean; // Add new collapsed prop
     project?: Project; // Add project prop
+    standalone?: boolean; // Add standalone prop for minimal styling
+    alignRight?: boolean; // Add alignRight prop
 }
 
 export function AttachmentGroup({
@@ -48,12 +51,16 @@ export function AttachmentGroup({
     maxHeight = '216px',
     gridImageHeight = 180, // Increased from 120 for better visibility
     collapsed = true, // By default, HTML/MD files are collapsed
-    project // Add project prop
+    project, // Add project prop
+    standalone = false, // Add standalone prop
+    alignRight = false // Add alignRight prop
 }: AttachmentGroupProps) {
     // State for modal
     const [isModalOpen, setIsModalOpen] = useState(false);
     // Responsive state - ALWAYS initialize this hook first before any conditionals
     const [isMobile, setIsMobile] = useState(false);
+    // Simple carousel state - show one item at a time - MUST be before any early returns
+    const [currentIndex, setCurrentIndex] = useState(0);
 
     // Constants for height calculation - each row is about 66px (54px height + 12px gap)
     const ROW_HEIGHT = 54; // Height of a single file
@@ -83,7 +90,7 @@ export function AttachmentGroup({
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={{ opacity: 0, height: 0 }}
-                className={layout === 'inline' ? "mb-3 py-1 px-0.5" : "mt-4"}
+                className={layout === 'inline' ? "" : "mt-4"}
             />
         );
     }
@@ -114,17 +121,29 @@ export function AttachmentGroup({
         return !sandboxId ? file.localUrl : undefined;
     };
 
-    // Check if a file is HTML, Markdown, or CSV
+    // Check if a file is HTML, Markdown, CSV, XLSX, or PDF (previewable types in grid)
     const isPreviewableFile = (file: string | UploadedFile): boolean => {
         const path = getFilePath(file);
         const ext = path.split('.').pop()?.toLowerCase() || '';
-        return ext === 'html' || ext === 'htm' || ext === 'md' || ext === 'markdown' || ext === 'csv' || ext === 'tsv';
+        return (
+            ext === 'html' ||
+            ext === 'htm' ||
+            ext === 'md' ||
+            ext === 'markdown' ||
+            ext === 'csv' ||
+            ext === 'tsv' ||
+            ext === 'xlsx' ||
+            ext === 'xls' ||
+            ext === 'pdf'
+        );
     };
 
     // Pre-compute any conditional values used in rendering
     // This ensures hooks aren't conditionally called
     const maxVisibleFiles = isMobile ? 2 : 5;
     let visibleCount = Math.min(maxVisibleFiles, uniqueFiles.length);
+
+    // Use standalone mode to optimize grid layout for all file types
     let moreCount = uniqueFiles.length - visibleCount;
 
     // If there's just a single file more on desktop, show it
@@ -178,40 +197,173 @@ export function AttachmentGroup({
         const filename = path.split('/').pop() || '';
         const isImage = filename.match(/\.(jpg|jpeg|png|gif|webp|svg|bmp)$/i) !== null;
         const isPreviewFile = isPreviewableFile(file);
-        const shouldSpanFull = (sortedFiles.length % 2 === 1 && sortedFiles.length > 1 && index === sortedFiles.length - 1);
 
         return {
             file,
             path,
             isImage,
             isPreviewFile,
-            shouldSpanFull,
             wrapperClassName: cn(
                 "relative group",
-                isImage ? "flex items-center justify-center h-full" : "",
-                isPreviewFile && !collapsed ? "w-full" : ""
+                isImage ? "flex items-start justify-center" : "",
+                isPreviewFile ? "w-full" : "" // Previewable files span full width
             ),
-            wrapperStyle: (shouldSpanFull || (isPreviewFile && !collapsed)) ? { gridColumn: '1 / -1' } : undefined
+            wrapperStyle: isPreviewFile ? { gridColumn: '1 / -1' } : undefined // Make previewable files span full width like in CompleteToolView
         };
     });
+    
+    // Determine if we should use carousel (4+ attachments)
+    const shouldUseCarousel = layout === 'grid' && uniqueFiles.length >= 4;
+    
+    const canGoPrev = currentIndex > 0;
+    const canGoNext = currentIndex < uniqueFiles.length - 1;
+    
+    const handlePrev = () => {
+        if (canGoPrev) {
+            setCurrentIndex(prev => prev - 1);
+        }
+    };
+    
+    const handleNext = () => {
+        if (canGoNext) {
+            setCurrentIndex(prev => prev + 1);
+        }
+    };
 
     // Now continue with the fully conditional rendering but with pre-computed values
     const renderContent = () => {
         if (layout === 'grid') {
-            const shouldLastItemSpanFull = sortedFiles.length % 2 === 1 && sortedFiles.length > 1;
-
+            // Use carousel for many attachments - show one item at a time
+            if (shouldUseCarousel) {
+                const currentItem = sortedFilesWithMeta[currentIndex];
+                const currentFilePath = getFilePath(currentItem.file);
+                
+                return (
+                    <div className={cn("relative", className)}>
+                        {/* Carousel Navigation */}
+                        <div className="flex items-center justify-between mb-3">
+                            <div className="text-xs text-muted-foreground">
+                                {uniqueFiles.length} {uniqueFiles.length === 1 ? 'file' : 'files'}
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={handlePrev}
+                                    disabled={!canGoPrev}
+                                    className="h-7 w-7 p-0 opacity-60 hover:opacity-100 disabled:opacity-30"
+                                >
+                                    <ChevronLeft className="h-4 w-4" />
+                                </Button>
+                                <div className="text-xs text-muted-foreground min-w-[60px] text-center">
+                                    {currentIndex + 1} / {uniqueFiles.length}
+                                </div>
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={handleNext}
+                                    disabled={!canGoNext}
+                                    className="h-7 w-7 p-0 opacity-60 hover:opacity-100 disabled:opacity-30"
+                                >
+                                    <ChevronRight className="h-4 w-4" />
+                                </Button>
+                            </div>
+                        </div>
+                        
+                        {/* Single Item Display */}
+                        <div className="relative">
+                            <div className={cn(
+                                "relative",
+                                currentItem.wrapperClassName
+                            )} style={currentItem.wrapperStyle}>
+                                <FileAttachment
+                                    filepath={currentFilePath}
+                                    onClick={handleFileClick}
+                                    sandboxId={sandboxId}
+                                    showPreview={showPreviews}
+                                    localPreviewUrl={getLocalPreviewUrl(currentItem.file)}
+                                    className={cn(
+                                        "w-full",
+                                        currentItem.isImage ? "h-auto min-h-[54px]" :
+                                            currentItem.isPreviewFile ? "min-h-[240px] max-h-[400px]" : "h-[54px]"
+                                    )}
+                                    customStyle={
+                                        currentItem.isImage ? {
+                                            width: '100%',
+                                            height: 'auto',
+                                            maxHeight: `${gridImageHeight}px`,
+                                            '--attachment-height': `${gridImageHeight}px`
+                                        } as React.CSSProperties :
+                                            currentItem.isPreviewFile ? {
+                                                gridColumn: '1 / -1',
+                                                width: '100%'
+                                            } : undefined
+                                    }
+                                    collapsed={false}
+                                    project={project}
+                                    isSingleItemGrid={true}
+                                    standalone={standalone}
+                                    alignRight={alignRight}
+                                />
+                                {onRemove && (
+                                    <div
+                                        className="absolute -top-1 -right-1 h-5 w-5 rounded-full
+                                        bg-black dark:bg-white
+                                        border-3 border-sidebar
+                                        text-white dark:text-black flex items-center justify-center
+                                        z-30 cursor-pointer"
+                                        onClick={() => {
+                                            const originalIndex = uniqueFiles.findIndex(f => 
+                                                getFilePath(f) === currentFilePath
+                                            );
+                                            if (originalIndex !== -1) {
+                                                onRemove(originalIndex);
+                                                // Adjust current index if needed
+                                                if (currentIndex >= uniqueFiles.length - 1 && currentIndex > 0) {
+                                                    setCurrentIndex(prev => prev - 1);
+                                                }
+                                            }
+                                        }}
+                                    >
+                                        <TooltipProvider>
+                                            <Tooltip>
+                                                <TooltipTrigger asChild>
+                                                    <div className="flex items-center justify-center w-full h-full">
+                                                        <X size={10} strokeWidth={3} />
+                                                    </div>
+                                                </TooltipTrigger>
+                                                <TooltipContent side="top">
+                                                    <p>Remove file</p>
+                                                </TooltipContent>
+                                            </Tooltip>
+                                        </TooltipProvider>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+            
+            // Regular grid for fewer attachments
             return (
                 <div className={cn(
-                    "grid gap-3",
+                    "grid gap-3 auto-rows-max items-start",
+                    // Responsive grid columns based on file count
                     uniqueFiles.length === 1 ? "grid-cols-1" :
-                        uniqueFiles.length > 4 ? "grid-cols-1 sm:grid-cols-2 md:grid-cols-3" :
-                            "grid-cols-1 sm:grid-cols-2",
+                        uniqueFiles.length === 2 ? "grid-cols-1 sm:grid-cols-2" :
+                            uniqueFiles.length === 3 ? "grid-cols-1 sm:grid-cols-2 md:grid-cols-3" :
+                                "grid-cols-1 sm:grid-cols-2",
                     className
                 )}>
                     {sortedFilesWithMeta.map((item, index) => (
                         <div
                             key={index}
-                            className={item.wrapperClassName}
+                            className={cn(
+                                item.wrapperClassName,
+                                // Images and previewable files span naturally, regular files are compact
+                                item.isImage || item.isPreviewFile ? "w-full" : ""
+                            )}
                             style={item.wrapperStyle}
                         >
                             <FileAttachment
@@ -221,31 +373,28 @@ export function AttachmentGroup({
                                 showPreview={showPreviews}
                                 localPreviewUrl={getLocalPreviewUrl(item.file)}
                                 className={cn(
-                                    // Apply full width for all files in grid so they fill the cell
                                     "w-full",
-                                    // Apply appropriate height based on file type
                                     item.isImage ? "h-auto min-h-[54px]" :
-                                        (item.isPreviewFile && !collapsed) ? "min-h-[240px] max-h-[400px] overflow-auto" : "h-[54px]"
+                                        item.isPreviewFile ? "min-h-[240px] max-h-[400px]" : "h-[54px]" // Regular files are compact 54px
                                 )}
-                                // Pass customStyle for both images and previewable files
+                                // Pass customStyle for sizing - MUST include gridColumn for previewable files to trigger preview
                                 customStyle={
                                     item.isImage ? {
-                                        width: '100%', // Full width in grid
-                                        height: 'auto', // For compatibility
-                                        ...(({ '--attachment-height': `${item.shouldSpanFull ? Math.floor(gridImageHeight * 1.33) : gridImageHeight}px` }) as React.CSSProperties)
-                                    } :
-                                        (item.isPreviewFile && !collapsed) ? {
-                                            gridColumn: '1 / -1', // Explicit grid styling for previewable files
-
-                                        } :
-                                            item.shouldSpanFull ? {
-                                                gridColumn: '1 / -1' // Explicit grid styling for last item if odd count
-                                            } : {
-                                                width: '100%' // Ensure non-image files take full width
-                                            }
+                                        width: '100%',
+                                        height: 'auto',
+                                        maxHeight: `${gridImageHeight}px`,
+                                        '--attachment-height': `${gridImageHeight}px`
+                                    } as React.CSSProperties :
+                                        item.isPreviewFile ? {
+                                            gridColumn: '1 / -1', // This triggers isGridLayout and preview rendering!
+                                            width: '100%'
+                                        } : undefined // Regular files get no custom style
                                 }
-                                collapsed={collapsed} // Pass collapsed prop
+                                collapsed={false} // Always show previews in grid like in CompleteToolView
                                 project={project} // Pass project to FileAttachment
+                                isSingleItemGrid={uniqueFiles.length === 1} // Pass single item detection
+                                standalone={standalone} // Pass standalone prop
+                                alignRight={alignRight} // Pass alignRight prop
                             />
                             {onRemove && (
                                 <div
@@ -277,42 +426,52 @@ export function AttachmentGroup({
         } else {
             // For inline layout with pre-computed data
             return (
-                <div className={cn("flex flex-wrap gap-3", className)} style={{ maxHeight }}>
-                    {visibleFilesWithMeta.map((item, index) => (
-                        <div key={index} className={cn("relative group", item.wrapperClassName)}>
-                            <FileAttachment
-                                filepath={item.path}
-                                onClick={handleFileClick}
-                                sandboxId={sandboxId}
-                                showPreview={showPreviews}
-                                localPreviewUrl={getLocalPreviewUrl(item.file)}
-                                collapsed={true} // Always collapsed in inline mode
-                            />
-                            {onRemove && (
-                                <div
-                                    className="absolute -top-1 -right-1 h-5 w-5 rounded-full
+                <div className={cn("flex flex-wrap gap-3", className)}>
+                    {visibleFilesWithMeta.map((item, index) => {
+                        // In inline mode (chat input), ALL files should show as compact attachments
+                        // No preview expansion - keep it simple and consistent
+                        const isPreviewable = false;
+
+                        return (
+                            <div
+                                key={index}
+                                className="relative group"
+                            >
+                                <FileAttachment
+                                    filepath={item.path}
+                                    onClick={handleFileClick}
+                                    sandboxId={sandboxId}
+                                    showPreview={showPreviews}
+                                    localPreviewUrl={getLocalPreviewUrl(item.file)}
+                                    collapsed={true} // Collapse all files in inline layout - show as compact attachments
+                                    alignRight={alignRight} // Pass alignRight prop
+                                />
+                                {onRemove && (
+                                    <div
+                                        className="absolute -top-1 -right-1 h-5 w-5 rounded-full
                                         bg-black dark:bg-white
                                         border-3 border-sidebar
                                         text-white dark:text-black flex items-center justify-center
                                         z-30 cursor-pointer"
-                                    onClick={() => onRemove(index)}
-                                >
-                                    <TooltipProvider>
-                                        <Tooltip>
-                                            <TooltipTrigger asChild>
-                                                <div className="flex items-center justify-center w-full h-full">
-                                                    <X size={10} strokeWidth={3} />
-                                                </div>
-                                            </TooltipTrigger>
-                                            <TooltipContent side="top">
-                                                <p>Remove file</p>
-                                            </TooltipContent>
-                                        </Tooltip>
-                                    </TooltipProvider>
-                                </div>
-                            )}
-                        </div>
-                    ))}
+                                        onClick={() => onRemove(index)}
+                                    >
+                                        <TooltipProvider>
+                                            <Tooltip>
+                                                <TooltipTrigger asChild>
+                                                    <div className="flex items-center justify-center w-full h-full">
+                                                        <X size={10} strokeWidth={3} />
+                                                    </div>
+                                                </TooltipTrigger>
+                                                <TooltipContent side="top">
+                                                    <p>Remove file</p>
+                                                </TooltipContent>
+                                            </Tooltip>
+                                        </TooltipProvider>
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
 
                     {/* "More" button */}
                     {moreCount > 0 && (
@@ -346,16 +505,18 @@ export function AttachmentGroup({
             <AnimatePresence>
                 <motion.div
                     initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
+                    animate={{
+                        opacity: 1, height: 'auto'
+                    }}
                     exit={{ opacity: 0, height: 0 }}
-                    className={layout === 'inline' ? "mb-3 py-1 px-0.5" : "mt-4"}
+                    className={layout === 'inline' ? "pt-1.5 px-1.5 pb-0" : "mt-4"}
                 >
                     {renderContent()}
                 </motion.div>
-            </AnimatePresence>
+            </AnimatePresence >
 
             {/* Modal dialog to show all files - conditionally rendered based on isModalOpen state */}
-            <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
+            < Dialog open={isModalOpen} onOpenChange={setIsModalOpen} >
                 <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
                     <DialogHeader className="mb-1">
                         <DialogTitle>
@@ -364,7 +525,10 @@ export function AttachmentGroup({
                     </DialogHeader>
 
                     <div className={cn(
-                        "grid gap-3 sm:justify-start justify-center sm:max-w-full max-w-[300px] mx-auto sm:mx-0",
+                        "grid gap-3 auto-rows-max items-start sm:justify-start justify-center sm:mx-0",
+                        // Force single column for standalone files in modal too with better width constraints
+                        standalone && !collapsed ? "grid-cols-1 w-full min-w-[300px] sm:min-w-[600px] max-w-[1200px] mx-auto" :
+                            "sm:max-w-full max-w-[300px] mx-auto",
                         uniqueFiles.length === 1 ? "grid-cols-1" :
                             uniqueFiles.length > 4 ? "grid-cols-1 sm:grid-cols-2 md:grid-cols-3" :
                                 "grid-cols-1 sm:grid-cols-2",
@@ -404,27 +568,34 @@ export function AttachmentGroup({
                                     const path = getFilePath(file);
                                     const filename = path.split('/').pop() || '';
                                     const isImage = filename.match(/\.(jpg|jpeg|png|gif|webp|svg|bmp)$/i) !== null;
+                                    const isPreviewFile = isPreviewableFile(file);
 
                                     return {
                                         file,
                                         path,
                                         isImage,
+                                        isPreviewFile,
                                         originalIndex,
                                         wrapperClassName: cn(
                                             "relative group",
-                                            isImage ? "flex items-center justify-center h-full" : ""
+                                            isImage ? "flex items-start justify-center" : "",
+                                            isPreviewFile ? "w-full" : ""
                                         ),
                                         fileClassName: cn(
                                             "w-full",
-                                            isImage ? "h-auto min-h-[54px]" : "h-[54px]"
+                                            isImage ? "h-auto min-h-[54px]" :
+                                                isPreviewFile ? "min-h-[240px] max-h-[400px]" : "h-[54px]"
                                         ),
                                         customStyle: isImage ? {
                                             width: '100%',
                                             height: 'auto',
-                                            ...(({ '--attachment-height': `${gridImageHeight}px` }) as React.CSSProperties)
-                                        } : {
-                                            width: '100%'
-                                        }
+                                            maxHeight: `${gridImageHeight}px`,
+                                            '--attachment-height': `${gridImageHeight}px`
+                                        } as React.CSSProperties :
+                                            isPreviewFile ? {
+                                                gridColumn: '1 / -1', // This triggers isGridLayout and preview rendering!
+                                                width: '100%'
+                                            } : undefined // Regular files get no custom style
                                     };
                                 });
                             })();
@@ -433,6 +604,7 @@ export function AttachmentGroup({
                                 <div
                                     key={item.originalIndex}
                                     className={item.wrapperClassName}
+                                    style={item.isPreviewFile ? { gridColumn: '1 / -1' } : undefined}
                                 >
                                     <FileAttachment
                                         filepath={item.path}
@@ -445,8 +617,11 @@ export function AttachmentGroup({
                                         localPreviewUrl={getLocalPreviewUrl(item.file)}
                                         className={item.fileClassName}
                                         customStyle={item.customStyle}
-                                        collapsed={true} // Force collapsed for all in modal
+                                        collapsed={false} // Show previews like in CompleteToolView
                                         project={project}
+                                        isSingleItemGrid={uniqueFiles.length === 1} // Pass single item detection to modal too
+                                        standalone={false} // Never standalone in modal
+                                        alignRight={false} // Never align right in modal
                                     />
                                     {onRemove && (
                                         <div
@@ -481,7 +656,7 @@ export function AttachmentGroup({
                         })()}
                     </div>
                 </DialogContent>
-            </Dialog>
+            </Dialog >
         </>
     );
 } 

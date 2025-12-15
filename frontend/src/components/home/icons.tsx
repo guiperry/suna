@@ -1,32 +1,6 @@
 import { cn } from '@/lib/utils';
 
 export const Icons = {
-  logo: ({ className }: { className?: string }) => (
-    <svg
-      width="42"
-      height="24"
-      viewBox="0 0 42 24"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      className={cn('size-4 fill-[var(--secondary)]', className)}
-    >
-      <g clipPath="url(#clip0_322_9172)">
-        <path
-          d="M22.3546 0.96832C22.9097 0.390834 23.6636 0.0664062 24.4487 0.0664062C27.9806 0.0664062 31.3091 0.066408 34.587 0.0664146C41.1797 0.0664284 44.481 8.35854 39.8193 13.2082L29.6649 23.7718C29.1987 24.2568 28.4016 23.9133 28.4016 23.2274V13.9234L29.5751 12.7025C30.5075 11.7326 29.8472 10.0742 28.5286 10.0742H13.6016L22.3546 0.96832Z"
-          fill="current"
-        />
-        <path
-          d="M19.6469 23.0305C19.0919 23.608 18.338 23.9324 17.5529 23.9324C14.021 23.9324 10.6925 23.9324 7.41462 23.9324C0.821896 23.9324 -2.47942 15.6403 2.18232 10.7906L12.3367 0.227022C12.8029 -0.257945 13.6 0.0855283 13.6 0.771372L13.6 10.0754L12.4265 11.2963C11.4941 12.2662 12.1544 13.9246 13.473 13.9246L28.4001 13.9246L19.6469 23.0305Z"
-          fill="current"
-        />
-      </g>
-      <defs>
-        <clipPath id="clip0_322_9172">
-          <rect width="42" height="24" fill="white" />
-        </clipPath>
-      </defs>
-    </svg>
-  ),
   soc2: ({ className }: { className?: string }) => (
     <svg
       width="46"
@@ -34,7 +8,7 @@ export const Icons = {
       viewBox="0 0 46 45"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
-      className={cn('size-4', className)}
+      className={cn('size-4 text-foreground', className)}
     >
       <g filter="url(#filter0_ddd_1_4900)">
         <rect
@@ -67,7 +41,7 @@ export const Icons = {
             y1="21.2488"
             x2="34.988"
             y2="21.2488"
-            stroke="#E5E7EB"
+            stroke="currentColor"
             strokeWidth="0.263158"
           />
         </g>
@@ -229,7 +203,7 @@ export const Icons = {
       viewBox="0 0 46 45"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
-      className={cn('size-4', className)}
+      className={cn('size-4 text-foreground', className)}
     >
       <g filter="url(#filter0_ddd_1_2018)">
         <rect
@@ -262,7 +236,7 @@ export const Icons = {
             y1="21.2488"
             x2="34.9881"
             y2="21.2488"
-            stroke="#E4E4E7"
+            stroke="currentColor"
             strokeWidth="0.263158"
           />
         </g>
@@ -704,7 +678,7 @@ export const Icons = {
       viewBox="0 0 46 45"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
-      className={cn('size-4', className)}
+      className={cn('size-4 text-foreground', className)}
     >
       <g filter="url(#filter0_ddd_1_4914)">
         <rect
@@ -1009,7 +983,7 @@ export const Icons = {
       viewBox="0 0 46 45"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
-      className={cn('size-4', className)}
+      className={cn('size-4 text-foreground', className)}
     >
       <g filter="url(#filter0_ddd_1_2046)">
         <rect
@@ -1665,6 +1639,30 @@ export const Icons = {
           />
         </filter>
       </defs>
+    </svg>
+  ),
+  google: ({ className }: { className?: string }) => (
+    <svg
+      className={cn('w-5 h-5', className)}
+      viewBox="0 0 24 24"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+        fill="#4285F4"
+      />
+      <path
+        d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+        fill="#34A853"
+      />
+      <path
+        d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
+        fill="#FBBC05"
+      />
+      <path
+        d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
+        fill="#EA4335"
+      />
     </svg>
   ),
   googleDrive: () => (
@@ -2459,6 +2457,27 @@ export const Icons = {
           />
         </clipPath>
       </defs>
+    </svg>
+  ),
+  github: ({
+    className,
+    color = 'currentColor',
+  }: {
+    className?: string;
+    color?: string;
+  }) => (
+    <svg
+      className={cn('w-9 h-9', className)}
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      xmlns="http://www.w3.org/2000/svg"
+      fill={color}
+    >
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M12 0C5.37 0 0 5.373 0 12.01c0 5.303 3.438 9.8 8.207 11.387.6.113.82-.26.82-.577v-2.256c-3.338.727-4.033-1.416-4.033-1.416-.546-1.39-1.333-1.76-1.333-1.76-1.09-.745.082-.729.082-.729 1.205.085 1.84 1.26 1.84 1.26 1.07 1.836 2.807 1.306 3.492.998.108-.775.42-1.307.763-1.606-2.665-.307-5.466-1.34-5.466-5.968 0-1.318.47-2.396 1.24-3.24-.125-.307-.537-1.545.116-3.22 0 0 1.008-.324 3.3 1.23a11.44 11.44 0 013.006-.404c1.02.005 2.047.137 3.006.404 2.29-1.554 3.297-1.23 3.297-1.23.655 1.675.243 2.913.12 3.22.77.844 1.237 1.922 1.237 3.24 0 4.64-2.805 5.658-5.48 5.96.43.37.814 1.103.814 2.222v3.293c0 .32.216.694.825.577C20.565 21.807 24 17.31 24 12.01 24 5.373 18.627 0 12 0z"
+      />
     </svg>
   ),
 };

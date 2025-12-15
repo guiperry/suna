@@ -1,4 +1,5 @@
-import { extractToolData, normalizeContentToString } from '../utils';
+import { ToolCallData, ToolResultData } from '../types';
+import { normalizeContentToString } from '../utils';
 
 export interface WebScrapeData {
   url: string | null;
@@ -53,11 +54,11 @@ const extractFromNewFormat = (content: any): {
     
     if (args.urls) {
       if (typeof args.urls === 'string') {
-        urls = args.urls.split(',').map(u => u.trim());
-        url = urls[0];
+        urls = args.urls.split(',').map((u: string) => u.trim());
+        url = urls?.[0] || null;
       } else if (Array.isArray(args.urls)) {
         urls = args.urls;
-        url = urls[0];
+        url = urls?.[0] || null;
       }
     }
 
@@ -73,7 +74,7 @@ const extractFromNewFormat = (content: any): {
       urlCount = successMatch ? parseInt(successMatch[1]) : 0;
       
       const fileMatches = outputStr.match(/- ([^\n]+\.json)/g);
-      files = fileMatches ? fileMatches.map(match => match.replace('- ', '')) : [];
+      files = fileMatches ? fileMatches.map((match: string) => match.replace('- ', '')) : [];
     }
 
     const extractedData = {
@@ -85,14 +86,6 @@ const extractFromNewFormat = (content: any): {
       urlCount,
       timestamp: toolExecution.execution_details?.timestamp
     };
-
-    console.log('WebScrapeToolView: Extracted from new format:', {
-      url: extractedData.url,
-      urlCount: extractedData.urlCount,
-      fileCount: extractedData.files.length,
-      success: extractedData.success
-    });
-    
     return extractedData;
   }
 
@@ -152,22 +145,7 @@ const extractFromLegacyFormat = (content: any): {
   files: string[];
   urlCount: number;
 } => {
-  const toolData = extractToolData(content);
-  
-  if (toolData.toolResult && toolData.arguments) {
-    console.log('WebScrapeToolView: Extracted from legacy format (extractToolData):', {
-      url: toolData.url
-    });
-    
-    return {
-      url: toolData.url || null,
-      urls: toolData.url ? [toolData.url] : null,
-      success: undefined,
-      message: null,
-      files: [],
-      urlCount: 0
-    };
-  }
+  // Legacy extraction removed - use toolCall/toolResult props instead
 
   const contentStr = normalizeContentToString(content);
   if (!contentStr) {
@@ -176,12 +154,6 @@ const extractFromLegacyFormat = (content: any): {
 
   const url = extractScrapeUrl(contentStr);
   const results = extractScrapeResults(contentStr);
-  
-  console.log('WebScrapeToolView: Extracted from legacy format (manual parsing):', {
-    url,
-    fileCount: results.files.length,
-    urlCount: results.urlCount
-  });
   
   return {
     url,
@@ -194,8 +166,8 @@ const extractFromLegacyFormat = (content: any): {
 };
 
 export function extractWebScrapeData(
-  assistantContent: any,
-  toolContent: any,
+  toolCall: ToolCallData,
+  toolResult: ToolResultData | undefined,
   isSuccess: boolean,
   toolTimestamp?: string,
   assistantTimestamp?: string
@@ -210,84 +182,57 @@ export function extractWebScrapeData(
   actualToolTimestamp?: string;
   actualAssistantTimestamp?: string;
 } {
+  // Extract URL from toolCall arguments
+  const args = toolCall.arguments || {};
   let url: string | null = null;
   let urls: string[] | null = null;
-  let success = false;
+
+  if (args.urls) {
+    if (typeof args.urls === 'string') {
+      urls = args.urls.split(',').map((u: string) => u.trim());
+      url = urls?.[0] || null;
+    } else if (Array.isArray(args.urls)) {
+      urls = args.urls;
+      url = urls?.[0] || null;
+    }
+  } else if (args.url) {
+    url = args.url;
+    urls = [url];
+  }
+
+  // Extract results from toolResult
+  let success = isSuccess;
   let message: string | null = null;
   let files: string[] = [];
   let urlCount = 0;
-  let actualIsSuccess = isSuccess;
-  let actualToolTimestamp = toolTimestamp;
-  let actualAssistantTimestamp = assistantTimestamp;
 
-  const assistantNewFormat = extractFromNewFormat(assistantContent);
-  const toolNewFormat = extractFromNewFormat(toolContent);
+  if (toolResult?.output) {
+    const output = toolResult.output;
+    success = toolResult.success !== undefined ? toolResult.success : isSuccess;
 
-  console.log('WebScrapeToolView: Format detection results:', {
-    assistantNewFormat: {
-      hasUrl: !!assistantNewFormat.url,
-      fileCount: assistantNewFormat.files.length,
-      urlCount: assistantNewFormat.urlCount
-    },
-    toolNewFormat: {
-      hasUrl: !!toolNewFormat.url,
-      fileCount: toolNewFormat.files.length,
-      urlCount: toolNewFormat.urlCount
+    if (typeof output === 'string') {
+      message = output;
+      
+      const successMatch = output.match(/Successfully scraped (?:all )?(\d+) URLs?/);
+      urlCount = successMatch ? parseInt(successMatch[1]) : 0;
+      
+      const fileMatches = output.match(/- ([^\n]+\.json)/g);
+      files = fileMatches ? fileMatches.map((match: string) => match.replace('- ', '')) : [];
+    } else if (typeof output === 'object' && output !== null) {
+      const outputObj = output as any;
+      message = outputObj.message || JSON.stringify(output);
+      
+      if (outputObj.files && Array.isArray(outputObj.files)) {
+        files = outputObj.files;
+      }
+      
+      if (outputObj.url_count !== undefined) {
+        urlCount = outputObj.url_count;
+      } else if (outputObj.urls && Array.isArray(outputObj.urls)) {
+        urlCount = outputObj.urls.length;
+      }
     }
-  });
-
-  if (assistantNewFormat.url || assistantNewFormat.files.length > 0 || assistantNewFormat.urlCount > 0) {
-    url = assistantNewFormat.url;
-    urls = assistantNewFormat.urls;
-    success = assistantNewFormat.success || false;
-    message = assistantNewFormat.message;
-    files = assistantNewFormat.files;
-    urlCount = assistantNewFormat.urlCount;
-    if (assistantNewFormat.success !== undefined) {
-      actualIsSuccess = assistantNewFormat.success;
-    }
-    if (assistantNewFormat.timestamp) {
-      actualAssistantTimestamp = assistantNewFormat.timestamp;
-    }
-    console.log('WebScrapeToolView: Using assistant new format data');
-  } else if (toolNewFormat.url || toolNewFormat.files.length > 0 || toolNewFormat.urlCount > 0) {
-    url = toolNewFormat.url;
-    urls = toolNewFormat.urls;
-    success = toolNewFormat.success || false;
-    message = toolNewFormat.message;
-    files = toolNewFormat.files;
-    urlCount = toolNewFormat.urlCount;
-    if (toolNewFormat.success !== undefined) {
-      actualIsSuccess = toolNewFormat.success;
-    }
-    if (toolNewFormat.timestamp) {
-      actualToolTimestamp = toolNewFormat.timestamp;
-    }
-    console.log('WebScrapeToolView: Using tool new format data');
-  } else {
-    const assistantLegacy = extractFromLegacyFormat(assistantContent);
-    const toolLegacy = extractFromLegacyFormat(toolContent);
-
-    url = assistantLegacy.url || toolLegacy.url;
-    urls = assistantLegacy.urls || toolLegacy.urls;
-    success = assistantLegacy.success || toolLegacy.success || false;
-    message = assistantLegacy.message || toolLegacy.message;
-    files = assistantLegacy.files.length > 0 ? assistantLegacy.files : toolLegacy.files;
-    urlCount = assistantLegacy.urlCount > 0 ? assistantLegacy.urlCount : toolLegacy.urlCount;
-    
-    console.log('WebScrapeToolView: Using legacy format data:', {
-      url,
-      fileCount: files.length,
-      urlCount
-    });
   }
-
-  console.log('WebScrapeToolView: Final extracted data:', {
-    url,
-    fileCount: files.length,
-    urlCount,
-    actualIsSuccess
-  });
 
   return {
     url,
@@ -296,8 +241,8 @@ export function extractWebScrapeData(
     message,
     files,
     urlCount,
-    actualIsSuccess,
-    actualToolTimestamp,
-    actualAssistantTimestamp
+    actualIsSuccess: success,
+    actualToolTimestamp: toolTimestamp,
+    actualAssistantTimestamp: assistantTimestamp
   };
 } 

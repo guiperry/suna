@@ -33,12 +33,20 @@ def load_progress():
                 return {"step": 0, "data": {}}
     return {"step": 0, "data": {}}
 
-
 def get_setup_method():
     """Gets the setup method chosen during setup."""
     progress = load_progress()
     return progress.get("data", {}).get("setup_method")
 
+def check_docker_available():
+    """Check if Docker is available and running."""
+    try:
+        result = subprocess.run(["docker", "version"], capture_output=True, shell=IS_WINDOWS, check=True)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print(f"{Colors.RED}❌ Docker is not running or not installed.{Colors.ENDC}")
+        print(f"{Colors.YELLOW}Please start Docker and try again.{Colors.ENDC}")
+        return False
 
 def check_docker_compose_up():
     result = subprocess.run(
@@ -81,6 +89,29 @@ def start_manual_services():
         shell=IS_WINDOWS,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
+    step_num = 1
+    
+    # Show Supabase start command for local setup
+    if supabase_setup_method == "local":
+        print(f"{Colors.BOLD}{step_num}. Start Local Supabase (in backend directory):{Colors.ENDC}")
+        print(f"{Colors.CYAN}   cd backend && npx supabase start{Colors.ENDC}\n")
+        step_num += 1
+
+    print(f"{Colors.BOLD}{step_num}. Start Infrastructure (in project root):{Colors.ENDC}")
+    print(f"{Colors.CYAN}   docker compose up redis -d{Colors.ENDC}\n")
+    step_num += 1
+
+    print(f"{Colors.BOLD}{step_num}. Start Frontend (in a new terminal):{Colors.ENDC}")
+    print(f"{Colors.CYAN}   cd frontend && npm run dev{Colors.ENDC}\n")
+    step_num += 1
+
+    print(f"{Colors.BOLD}{step_num}. Start Backend (in a new terminal):{Colors.ENDC}")
+    print(f"{Colors.CYAN}   cd backend && uv run api.py{Colors.ENDC}\n")
+    step_num += 1
+
+    print(f"{Colors.BOLD}{step_num}. Start Background Worker (in a new terminal):{Colors.ENDC}")
+    print(
+        f"{Colors.CYAN}   cd backend && uv run dramatiq run_agent_background{Colors.ENDC}\n"
     )
     print(f"{Colors.GREEN}   ✓ Infrastructure started{Colors.ENDC}\n")
     time.sleep(2)
@@ -93,6 +124,15 @@ def start_manual_services():
         stdout=backend_log,
         stderr=backend_log,
         preexec_fn=os.setpgrp if not IS_WINDOWS else None
+    # Show stop commands for local Supabase
+    if supabase_setup_method == "local":
+        print(f"{Colors.BOLD}To stop Local Supabase:{Colors.ENDC}")
+        print(f"{Colors.CYAN}   cd backend && npx supabase stop{Colors.ENDC}\n")
+
+    print("Once all services are running, access Suna at: http://localhost:3000\n")
+
+    print(
+        f"{Colors.YELLOW}💡 Tip:{Colors.ENDC} You can use '{Colors.CYAN}./start.py{Colors.ENDC}' to start/stop the infrastructure services."
     )
     print(f"{Colors.GREEN}   ✓ Backend starting (logs: /tmp/suna_backend.log){Colors.ENDC}\n")
     time.sleep(3)
@@ -172,6 +212,10 @@ def main():
     if setup_method == "manual":
         # For manual setup, automatically start/stop all services
         print(f"{Colors.BLUE}{Colors.BOLD}Manual Setup Detected{Colors.ENDC}")
+        # For manual setup, we only manage infrastructure services (redis)
+        # and show instructions for the rest
+        print(f"{Colors.BLUE}{Colors.BOLD}Manual Setup Detected{Colors.ENDC}")
+        print("Managing infrastructure services (Redis)...\n")
 
         force = "-f" in sys.argv
         if force:
@@ -182,6 +226,13 @@ def main():
             ["pgrep", "-f", "python api.py"],
             capture_output=True
         ).returncode == 0
+        is_infra_up = subprocess.run(
+            ["docker", "compose", "ps", "-q", "redis"],
+            capture_output=True,
+            text=True,
+            shell=IS_WINDOWS,
+        )
+        is_up = len(is_infra_up.stdout.strip()) > 0
 
         frontend_running = subprocess.run(
             ["pgrep", "-f", "next dev"],
@@ -212,6 +263,11 @@ def main():
             stop_manual_services()
         else:
             start_manual_services()
+            subprocess.run(
+                ["docker", "compose", "up", "redis", "-d"], shell=IS_WINDOWS
+            )
+            print(f"\n{Colors.GREEN}✅ Infrastructure services started.{Colors.ENDC}")
+            print_manual_instructions()
 
     else:  # docker setup
         print(f"{Colors.BLUE}{Colors.BOLD}Docker Setup Detected{Colors.ENDC}")
@@ -221,6 +277,9 @@ def main():
         if force:
             print("Force awakened. Skipping confirmation.")
 
+        if not check_docker_available():
+            return
+            
         is_up = check_docker_compose_up()
 
         if is_up:

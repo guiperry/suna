@@ -1,140 +1,178 @@
 'use client'
 
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import {
-  Settings,
   CheckCircle,
   AlertTriangle,
-  Loader2,
   Clock,
-  Code,
-  FileText,
-  ArrowRight,
   Wrench,
+  Copy,
+  Check,
+  Loader2,
 } from 'lucide-react';
 import { ToolViewProps } from './types';
-import { formatTimestamp, getToolTitle, extractToolData } from './utils';
-import { cn } from '@/lib/utils';
+import { formatTimestamp, getToolTitle } from './utils';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Button } from '@/components/ui/button';
 import { LoadingState } from './shared/LoadingState';
+import { toast } from 'sonner';
+import { AppIcon } from './shared/AppIcon';
+import { SmartJsonViewer } from './shared/SmartJsonViewer';
 
 export function GenericToolView({
-  name = 'generic-tool',
-  assistantContent,
-  toolContent,
+  toolCall,
+  toolResult,
   assistantTimestamp,
   toolTimestamp,
   isSuccess = true,
   isStreaming = false,
 }: ToolViewProps) {
-  const [progress, setProgress] = useState(0);
-
-  const toolTitle = getToolTitle(name);
-
-  const formatContent = (content: any) => {
+  const parseContent = React.useCallback((content: any): any => {
     if (!content) return null;
 
-    // Use the new parser for backwards compatibility
-    const { toolResult } = extractToolData(content);
-
-    if (toolResult) {
-      // Format the structured content nicely
-      const formatted: any = {
-        tool: toolResult.xmlTagName || toolResult.functionName,
-      };
-
-      if (toolResult.arguments && Object.keys(toolResult.arguments).length > 0) {
-        formatted.parameters = toolResult.arguments;
-      }
-
-      if (toolResult.toolOutput) {
-        formatted.output = toolResult.toolOutput;
-      }
-
-      if (toolResult.isSuccess !== undefined) {
-        formatted.success = toolResult.isSuccess;
-      }
-
-      return JSON.stringify(formatted, null, 2);
-    }
-
-    // Fallback to legacy format handling
     if (typeof content === 'object') {
-      // Check for direct structured format (legacy)
-      if ('tool_name' in content || 'xml_tag_name' in content) {
-        const formatted: any = {
-          tool: content.tool_name || content.xml_tag_name || 'unknown',
-        };
-
-        if (content.parameters && Object.keys(content.parameters).length > 0) {
-          formatted.parameters = content.parameters;
-        }
-
-        if (content.result) {
-          formatted.result = content.result;
-        }
-
-        return JSON.stringify(formatted, null, 2);
-      }
-
-      // Check if it has a content field that might contain the structured data (legacy)
-      if ('content' in content && typeof content.content === 'object') {
-        const innerContent = content.content;
-        if ('tool_name' in innerContent || 'xml_tag_name' in innerContent) {
-          const formatted: any = {
-            tool: innerContent.tool_name || innerContent.xml_tag_name || 'unknown',
-          };
-
-          if (innerContent.parameters && Object.keys(innerContent.parameters).length > 0) {
-            formatted.parameters = innerContent.parameters;
-          }
-
-          if (innerContent.result) {
-            formatted.result = innerContent.result;
-          }
-
-          return JSON.stringify(formatted, null, 2);
-        }
-      }
-
-      // Fall back to old format handling
-      if (content.content && typeof content.content === 'string') {
-        return content.content;
-      }
-      return JSON.stringify(content, null, 2);
+      return content;
     }
 
     if (typeof content === 'string') {
+      const textContentMatch = content.match(/text=(['"])((?:(?!\1|\\).|\\.)*)\1/);
+      
+      if (textContentMatch) {
+         try {
+           let jsonStr = textContentMatch[2];
+           if (textContentMatch[1] === "'") {
+             jsonStr = jsonStr.replace(/\\'/g, "'").replace(/\\\\/g, "\\");
+           } else {
+             jsonStr = jsonStr.replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+           }
+           
+           try {
+             return JSON.parse(jsonStr);
+           } catch {
+             return jsonStr;
+           }
+         } catch (e) {
+         }
+      }
+
       try {
-        const parsedJson = JSON.parse(content);
-        return JSON.stringify(parsedJson, null, 2);
+        const parsed = JSON.parse(content);
+        if (typeof parsed === 'string') {
+           try {
+             return JSON.parse(parsed);
+           } catch {
+             return parsed;
+           }
+        }
+        return parsed;
       } catch (e) {
-        return content;
       }
     }
+    
+    return content;
+  }, []);
 
+  // Format arguments from toolCall
+  const parsedAssistantContent = React.useMemo(
+    () => parseContent(toolCall?.arguments),
+    [toolCall?.arguments, parseContent],
+  );
+  
+  // Format output from toolResult
+  const parsedToolContent = React.useMemo(
+    () => toolResult ? parseContent(toolResult.output) : null,
+    [toolResult, parseContent],
+  );
+
+  const formatAsString = (content: any) => {
+    if (typeof content === 'object' && content !== null) {
+      return JSON.stringify(content, null, 2);
+    }
     return String(content);
   };
 
   const formattedAssistantContent = React.useMemo(
-    () => formatContent(assistantContent),
-    [assistantContent],
-  );
-  const formattedToolContent = React.useMemo(
-    () => formatContent(toolContent),
-    [toolContent],
+    () => parsedAssistantContent ? formatAsString(parsedAssistantContent) : null,
+    [parsedAssistantContent]
   );
 
+  const formattedToolContent = React.useMemo(
+    () => parsedToolContent ? formatAsString(parsedToolContent) : null,
+    [parsedToolContent]
+  );
+
+  // Add copy functionality state
+  const [isCopyingInput, setIsCopyingInput] = React.useState(false);
+  const [isCopyingOutput, setIsCopyingOutput] = React.useState(false);
+
+  // Copy functions
+  const copyToClipboard = React.useCallback(async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (err) {
+      console.error('Failed to copy text: ', err);
+      return false;
+    }
+  }, []);
+
+  const handleCopyInput = React.useCallback(async () => {
+    if (!formattedAssistantContent) return;
+
+    setIsCopyingInput(true);
+    const success = await copyToClipboard(formattedAssistantContent);
+    if (success) {
+      toast.success('File content copied to clipboard');
+    } else {
+      toast.error('Failed to copy file content');
+    }
+    setTimeout(() => setIsCopyingInput(false), 500);
+  }, [formattedAssistantContent, copyToClipboard]);
+
+  const handleCopyOutput = React.useCallback(async () => {
+    if (!formattedToolContent) return;
+
+    setIsCopyingOutput(true);
+    const success = await copyToClipboard(formattedToolContent);
+    if (success) {
+      toast.success('File content copied to clipboard');
+    } else {
+      toast.error('Failed to copy file content');
+    }
+    setTimeout(() => setIsCopyingOutput(false), 500);
+  }, [formattedToolContent, copyToClipboard]);
+
+  // Defensive check - handle cases where toolCall might be undefined or missing function_name
+  if (!toolCall || !toolCall.function_name) {
+    console.warn('GenericToolView: toolCall is undefined or missing function_name. Tool views should use structured props.');
+    return (
+      <Card className="gap-0 flex border-0 shadow-none p-0 py-0 rounded-none flex-col h-full overflow-hidden bg-card">
+        <CardHeader className="h-14 bg-zinc-50/80 dark:bg-zinc-900/80 backdrop-blur-sm border-b p-2 px-4">
+          <CardTitle className="text-base font-medium text-zinc-900 dark:text-zinc-100">
+            Tool View Error
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-4">
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">
+            This tool view requires structured metadata. Please update the component to use toolCall and toolResult props.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const name = toolCall.function_name.replace(/_/g, '-').toLowerCase();
+  const toolTitle = (toolCall as any)._display_hint || getToolTitle(name);
+
   return (
-    <Card className="gap-0 flex border shadow-none border-t border-b-0 border-x-0 p-0 rounded-none flex-col h-full overflow-hidden bg-white dark:bg-zinc-950">
+    <Card className="gap-0 flex border-0 shadow-none p-0 py-0 rounded-none flex-col h-full overflow-hidden bg-card">
       <CardHeader className="h-14 bg-zinc-50/80 dark:bg-zinc-900/80 backdrop-blur-sm border-b p-2 px-4 space-y-2">
         <div className="flex flex-row items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="relative p-2 rounded-lg bg-gradient-to-br from-orange-500/20 to-orange-600/10 border border-orange-500/20">
-              <Wrench className="w-5 h-5 text-orange-500 dark:text-orange-400" />
+            <div className="relative p-2 rounded-lg border bg-muted/10">
+              <AppIcon toolCall={toolCall} size={20} className="w-5 h-5" />
             </div>
             <div>
               <CardTitle className="text-base font-medium text-zinc-900 dark:text-zinc-100">
@@ -160,6 +198,13 @@ export function GenericToolView({
               {isSuccess ? 'Tool executed successfully' : 'Tool execution failed'}
             </Badge>
           )}
+
+          {isStreaming && (
+            <Badge className="bg-gradient-to-b from-blue-200 to-blue-100 text-blue-700 dark:from-blue-800/50 dark:to-blue-900/60 dark:text-blue-300">
+              <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+              Executing
+            </Badge>
+          )}
         </div>
       </CardHeader>
 
@@ -169,7 +214,7 @@ export function GenericToolView({
             icon={Wrench}
             iconColor="text-orange-500 dark:text-orange-400"
             bgColor="bg-gradient-to-b from-orange-100 to-orange-50 shadow-inner dark:from-orange-800/40 dark:to-orange-900/60 dark:shadow-orange-950/20"
-            title="Executing tool"
+            title={toolTitle}
             filePath={name}
             showProgress={true}
           />
@@ -178,15 +223,34 @@ export function GenericToolView({
             <div className="p-4 space-y-4">
               {formattedAssistantContent && (
                 <div className="space-y-2">
-                  <div className="text-sm font-medium text-zinc-700 dark:text-zinc-300 flex items-center">
-                    <Wrench className="h-4 w-4 mr-2 text-zinc-500 dark:text-zinc-400" />
-                    Input
+                  <div className="text-sm font-medium text-zinc-700 dark:text-zinc-300 flex items-center justify-between">
+                    <div className="flex items-center">
+                      Input
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleCopyInput}
+                      disabled={isCopyingInput}
+                      className="h-6 w-6 p-0"
+                      title="Copy file content"
+                    >
+                      {isCopyingInput ? (
+                        <Check className="h-3 w-3" />
+                      ) : (
+                        <Copy className="h-3 w-3" />
+                      )}
+                    </Button>
                   </div>
                   <div className="border-muted bg-muted/20 rounded-lg overflow-hidden border">
                     <div className="p-4">
-                      <pre className="text-xs text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap break-words font-mono">
-                        {formattedAssistantContent}
-                      </pre>
+                      {typeof parsedAssistantContent === 'object' && parsedAssistantContent !== null ? (
+                        <SmartJsonViewer data={parsedAssistantContent} />
+                      ) : (
+                        <pre className="text-xs text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap break-words font-mono">
+                          {formattedAssistantContent}
+                        </pre>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -194,15 +258,34 @@ export function GenericToolView({
 
               {formattedToolContent && (
                 <div className="space-y-2">
-                  <div className="text-sm font-medium text-zinc-700 dark:text-zinc-300 flex items-center">
-                    <Wrench className="h-4 w-4 mr-2 text-zinc-500 dark:text-zinc-400" />
-                    Output
+                  <div className="text-sm font-medium text-zinc-700 dark:text-zinc-300 flex items-center justify-between">
+                    <div className="flex items-center">
+                      Output
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleCopyOutput}
+                      disabled={isCopyingOutput}
+                      className="h-6 w-6 p-0"
+                      title="Copy file content"
+                    >
+                      {isCopyingOutput ? (
+                        <Check className="h-3 w-3" />
+                      ) : (
+                        <Copy className="h-3 w-3" />
+                      )}
+                    </Button>
                   </div>
                   <div className="border-muted bg-muted/20 rounded-lg overflow-hidden border">
                     <div className="p-4">
-                      <pre className="text-xs text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap break-words font-mono">
-                        {formattedToolContent}
-                      </pre>
+                      {typeof parsedToolContent === 'object' && parsedToolContent !== null ? (
+                        <SmartJsonViewer data={parsedToolContent} />
+                      ) : (
+                        <pre className="text-xs text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap break-words font-mono">
+                          {formattedToolContent}
+                        </pre>
+                      )}
                     </div>
                   </div>
                 </div>

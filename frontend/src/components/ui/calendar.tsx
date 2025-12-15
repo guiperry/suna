@@ -11,11 +11,13 @@ function Calendar({
   className,
   classNames,
   showOutsideDays = true,
+  fixedWeeks = true,
   ...props
 }: React.ComponentProps<typeof DayPicker>) {
   return (
     <DayPicker
       showOutsideDays={showOutsideDays}
+      fixedWeeks={fixedWeeks}
       className={cn('p-3', className)}
       classNames={{
         months: 'flex flex-col sm:flex-row gap-2',
@@ -55,7 +57,7 @@ function Calendar({
           'day-outside text-muted-foreground aria-selected:text-muted-foreground',
         day_disabled: 'text-muted-foreground opacity-50',
         day_range_middle:
-          'aria-selected:bg-accent aria-selected:text-accent-foreground',
+          'aria-selected:bg-transparent aria-selected:text-accent-foreground',
         day_hidden: 'invisible',
         ...classNames,
       }}

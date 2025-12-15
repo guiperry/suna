@@ -1,6 +1,6 @@
 import React from 'react';
-import type { Project } from '@/lib/api';
-import { Message as BaseApiMessageType } from '@/lib/api';
+import type { Project } from '@/lib/api/threads';
+import { Message as BaseApiMessageType } from '@/lib/api/threads';
 
 // Define a type for the params to make React.use() work properly
 export type ThreadParams = {
@@ -13,7 +13,7 @@ export interface UnifiedMessage {
   sequence?: number;
   message_id: string | null; // Can be null for transient stream events (chunks, unsaved statuses)
   thread_id: string;
-  type: 'user' | 'assistant' | 'tool' | 'system' | 'status' | 'browser_state'; // Add 'system' if used
+  type: 'user' | 'assistant' | 'tool' | 'system' | 'status' | 'browser_state' | 'image_context' | 'llm_response_end' | 'llm_response_start'; // image_context for images loaded into LLM context
   is_llm_message: boolean;
   content: string; // ALWAYS a JSON string from the backend
   metadata: string; // ALWAYS a JSON string from the backend
@@ -22,8 +22,6 @@ export interface UnifiedMessage {
   agent_id?: string; // ID of the agent associated with this message
   agents?: {
     name: string;
-    avatar?: string;
-    avatar_color?: string;
   }; // Agent information from join
 }
 
@@ -35,17 +33,39 @@ export interface ParsedContent {
   tool_call_id?: string; // For tool results
   name?: string; // For tool results
   status_type?: string; // For status messages
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    cache_read_tokens?: number;
+    cache_creation_tokens?: number;
+  }; // For llm_response_end messages
   [key: string]: any; // Allow other properties
 }
 
 // Helper type for parsed metadata
 export interface ParsedMetadata {
-  stream_status?: 'chunk' | 'complete';
+  stream_status?: 'chunk' | 'complete' | 'tool_call_chunk';
   thread_run_id?: string;
   tool_index?: number;
   assistant_message_id?: string; // Link tool results/statuses back
   linked_tool_result_message_id?: string; // Link status to tool result
-  parsing_details?: any;
+  // New format fields - directly in metadata, no wrapper
+  tool_calls?: Array<{
+    tool_call_id: string;
+    function_name: string;
+    arguments: Record<string, any> | string; // Can be string (partial JSON during streaming) or object (complete)
+    source: 'native' | 'xml';
+  }>;
+  text_content?: string;
+  function_name?: string; // Stored directly in metadata, not in result
+  result?: {
+    success: boolean;
+    output: any;
+    error?: string | null;
+  };
+  return_format?: 'native' | 'xml';
+  tool_call_id?: string;
   [key: string]: any; // Allow other properties
 }
 
@@ -60,6 +80,9 @@ export interface ApiMessageType extends Omit<BaseApiMessageType, 'type'> {
   // Allow 'type' to be potentially wider than the base type
   type?: string;
 }
+
+// Thread page-specific types
+export type AgentStatus = 'idle' | 'running' | 'connecting' | 'error';
 
 // Re-export existing types
 export type { Project };

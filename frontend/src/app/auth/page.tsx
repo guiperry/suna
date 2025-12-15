@@ -3,55 +3,54 @@
 import Link from 'next/link';
 import { SubmitButton } from '@/components/ui/submit-button';
 import { Input } from '@/components/ui/input';
-import GoogleSignIn from '@/components/GoogleSignIn';
-import { FlickeringGrid } from '@/components/home/ui/flickering-grid';
-import { useMediaQuery } from '@/hooks/use-media-query';
-import { useState, useEffect, useRef, Suspense } from 'react';
-import { useScroll } from 'motion/react';
-import { signIn, signUp, forgotPassword } from './actions';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Button } from '@/components/ui/button';
+import { useMediaQuery } from '@/hooks/utils';
+import { useState, useEffect, Suspense, lazy } from 'react';
+import { signUp, resendMagicLink } from './actions';
 import { useSearchParams, useRouter } from 'next/navigation';
-import {
-  ArrowLeft,
-  X,
-  CheckCircle,
-  AlertCircle,
-  MailCheck,
-  Loader2,
-} from 'lucide-react';
+import { MailCheck, Clock, ExternalLink } from 'lucide-react';
 import { useAuth } from '@/components/AuthProvider';
+import { useAuthMethodTracking } from '@/stores/auth-tracking';
+import { toast } from 'sonner';
+import { useTranslations } from 'next-intl';
+import { KortixLogo } from '@/components/sidebar/kortix-logo';
+import { ReferralCodeDialog } from '@/components/referrals/referral-code-dialog';
 
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from '@/components/ui/dialog';
+// Lazy load heavy components
+const GoogleSignIn = lazy(() => import('@/components/GoogleSignIn'));
+// const GitHubSignIn = lazy(() => import('@/components/GithubSignIn'));
+const AnimatedBg = lazy(() => import('@/components/ui/animated-bg').then(mod => ({ default: mod.AnimatedBg })));
 
 function LoginContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user, isLoading } = useAuth();
   const mode = searchParams.get('mode');
-  const returnUrl = searchParams.get('returnUrl');
+  const returnUrl = searchParams.get('returnUrl') || searchParams.get('redirect');
   const message = searchParams.get('message');
+  const isExpired = searchParams.get('expired') === 'true';
+  const expiredEmail = searchParams.get('email') || '';
+  const referralCodeParam = searchParams.get('ref') || '';
+  const t = useTranslations('auth');
 
-  const isSignUp = mode === 'signup';
-  const tablet = useMediaQuery('(max-width: 1024px)');
+  const isSignUp = mode !== 'signin';
+  const [referralCode, setReferralCode] = useState(referralCodeParam);
+  const [showReferralInput, setShowReferralInput] = useState(false);
+  const [showReferralDialog, setShowReferralDialog] = useState(false);
+  const isMobile = useMediaQuery('(max-width: 768px)');
   const [mounted, setMounted] = useState(false);
-  const [isScrolling, setIsScrolling] = useState(false);
-  const scrollTimeout = useRef<NodeJS.Timeout | null>(null);
-  const { scrollY } = useScroll();
+  const [acceptedTerms, setAcceptedTerms] = useState(false); // GDPR requires explicit opt-in
 
-  // Redirect if user is already logged in, checking isLoading state
+  const { wasLastMethod: wasEmailLastMethod, markAsUsed: markEmailAsUsed } = useAuthMethodTracking('email');
+
   useEffect(() => {
-    if (!isLoading && user) {
+    // Don't auto-redirect if showing expired link state
+    if (!isLoading && user && !isExpired) {
       router.push(returnUrl || '/dashboard');
     }
-  }, [user, isLoading, router, returnUrl]);
+  }, [user, isLoading, router, returnUrl, isExpired]);
 
-  // Determine if message is a success message
   const isSuccessMessage =
     message &&
     (message.includes('Check your email') ||
@@ -62,521 +61,475 @@ function LoginContent() {
   const [registrationSuccess, setRegistrationSuccess] =
     useState(!!isSuccessMessage);
   const [registrationEmail, setRegistrationEmail] = useState('');
-
-  // Forgot password state
-  const [forgotPasswordOpen, setForgotPasswordOpen] = useState(false);
-  const [forgotPasswordEmail, setForgotPasswordEmail] = useState('');
-  const [forgotPasswordStatus, setForgotPasswordStatus] = useState<{
-    success?: boolean;
-    message?: string;
-  }>({});
+  
+  // Expired link state
+  const [linkExpired, setLinkExpired] = useState(isExpired);
+  const [expiredEmailState, setExpiredEmailState] = useState(expiredEmail);
+  const [resendEmail, setResendEmail] = useState('');
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  // Set registration success state from URL params
   useEffect(() => {
     if (isSuccessMessage) {
       setRegistrationSuccess(true);
     }
   }, [isSuccessMessage]);
 
-  // Detect when scrolling is active to reduce animation complexity
   useEffect(() => {
-    const unsubscribe = scrollY.on('change', () => {
-      setIsScrolling(true);
-
-      // Clear any existing timeout
-      if (scrollTimeout.current) {
-        clearTimeout(scrollTimeout.current);
+    if (isExpired) {
+      setLinkExpired(true);
+      if (expiredEmail) {
+        setExpiredEmailState(expiredEmail);
       }
-
-      // Set a new timeout
-      scrollTimeout.current = setTimeout(() => {
-        setIsScrolling(false);
-      }, 300); // Wait 300ms after scroll stops
-    });
-
-    return () => {
-      unsubscribe();
-      if (scrollTimeout.current) {
-        clearTimeout(scrollTimeout.current);
-      }
-    };
-  }, [scrollY]);
-
-  const handleSignIn = async (prevState: any, formData: FormData) => {
-    if (returnUrl) {
-      formData.append('returnUrl', returnUrl);
-    } else {
-      formData.append('returnUrl', '/dashboard');
     }
-    const result = await signIn(prevState, formData);
+  }, [isExpired, expiredEmail]);
 
-    // Check for success and redirectTo properties
-    if (
-      result &&
-      typeof result === 'object' &&
-      'success' in result &&
-      result.success &&
-      'redirectTo' in result
-    ) {
-      // Use window.location for hard navigation to avoid stale state
-      window.location.href = result.redirectTo as string;
-      return null; // Return null to prevent normal form action completion
-    }
+  const handleAuth = async (prevState: any, formData: FormData) => {
+    markEmailAsUsed();
 
-    return result;
-  };
-
-  const handleSignUp = async (prevState: any, formData: FormData) => {
-    // Store email for success state
     const email = formData.get('email') as string;
     setRegistrationEmail(email);
 
-    if (returnUrl) {
-      formData.append('returnUrl', returnUrl);
-    }
-
-    // Add origin for email redirects
+    const finalReturnUrl = returnUrl || '/dashboard';
+    formData.append('returnUrl', finalReturnUrl);
     formData.append('origin', window.location.origin);
+    formData.append('acceptedTerms', acceptedTerms.toString());
 
     const result = await signUp(prevState, formData);
 
-    // Check for success and redirectTo properties (direct login case)
-    if (
-      result &&
-      typeof result === 'object' &&
-      'success' in result &&
-      result.success &&
-      'redirectTo' in result
-    ) {
-      // Use window.location for hard navigation to avoid stale state
-      window.location.href = result.redirectTo as string;
-      return null; // Return null to prevent normal form action completion
-    }
-
-    // Check if registration was successful but needs email verification
-    if (result && typeof result === 'object' && 'message' in result) {
-      const resultMessage = result.message as string;
-      if (resultMessage.includes('Check your email')) {
+    // Magic link always returns success with message (no immediate redirect)
+    if (result && typeof result === 'object' && 'success' in result && result.success) {
+      if ('email' in result && result.email) {
+        setRegistrationEmail(result.email as string);
         setRegistrationSuccess(true);
-
-        // Update URL without causing a refresh
-        const params = new URLSearchParams(window.location.search);
-        params.set('message', resultMessage);
-
-        const newUrl =
-          window.location.pathname +
-          (params.toString() ? '?' + params.toString() : '');
-
-        window.history.pushState({ path: newUrl }, '', newUrl);
-
         return result;
       }
     }
 
+    if (result && typeof result === 'object' && 'message' in result) {
+      toast.error(t('signUpFailed'), {
+        description: result.message as string,
+        duration: 5000,
+      });
+      return {};
+    }
+
     return result;
   };
 
-  const handleForgotPassword = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
 
-    setForgotPasswordStatus({});
+  // Helper to get email provider info for "Open in X" button
+  // Uses mobile deep links when on mobile devices
+  const getEmailProviderInfo = (email: string) => {
+    const domain = email.split('@')[1]?.toLowerCase();
+    if (!domain) return null;
+    
+    // Detect mobile device for deep links
+    const isMobileDevice = typeof window !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    
+    // Provider config with web and mobile URLs
+    // Mobile URLs use deep links that open native apps if installed
+    const providers: { [key: string]: { name: string; webUrl: string; mobileUrl: string } } = {
+      // Gmail - googlemail:// opens Gmail app on iOS/Android
+      'gmail.com': { name: 'Gmail', webUrl: 'https://mail.google.com', mobileUrl: 'googlegmail://' },
+      'googlemail.com': { name: 'Gmail', webUrl: 'https://mail.google.com', mobileUrl: 'googlegmail://' },
+      // Outlook - ms-outlook:// opens Outlook app
+      'outlook.com': { name: 'Outlook', webUrl: 'https://outlook.live.com', mobileUrl: 'ms-outlook://' },
+      'hotmail.com': { name: 'Outlook', webUrl: 'https://outlook.live.com', mobileUrl: 'ms-outlook://' },
+      'live.com': { name: 'Outlook', webUrl: 'https://outlook.live.com', mobileUrl: 'ms-outlook://' },
+      'msn.com': { name: 'Outlook', webUrl: 'https://outlook.live.com', mobileUrl: 'ms-outlook://' },
+      // Yahoo - ymail:// opens Yahoo Mail app
+      'yahoo.com': { name: 'Yahoo Mail', webUrl: 'https://mail.yahoo.com', mobileUrl: 'ymail://' },
+      'yahoo.de': { name: 'Yahoo Mail', webUrl: 'https://mail.yahoo.com', mobileUrl: 'ymail://' },
+      'yahoo.co.uk': { name: 'Yahoo Mail', webUrl: 'https://mail.yahoo.com', mobileUrl: 'ymail://' },
+      // iCloud - Use web URL, Apple Mail is default on iOS
+      'icloud.com': { name: 'Mail', webUrl: 'https://www.icloud.com/mail', mobileUrl: 'message://' },
+      'me.com': { name: 'Mail', webUrl: 'https://www.icloud.com/mail', mobileUrl: 'message://' },
+      'mac.com': { name: 'Mail', webUrl: 'https://www.icloud.com/mail', mobileUrl: 'message://' },
+      // ProtonMail - protonmail:// opens ProtonMail app
+      'protonmail.com': { name: 'ProtonMail', webUrl: 'https://mail.proton.me', mobileUrl: 'protonmail://' },
+      'proton.me': { name: 'ProtonMail', webUrl: 'https://mail.proton.me', mobileUrl: 'protonmail://' },
+      'pm.me': { name: 'ProtonMail', webUrl: 'https://mail.proton.me', mobileUrl: 'protonmail://' },
+      // AOL - Use web URL (no widely-used deep link)
+      'aol.com': { name: 'AOL Mail', webUrl: 'https://mail.aol.com', mobileUrl: 'https://mail.aol.com' },
+      // Zoho - Use web URL
+      'zoho.com': { name: 'Zoho Mail', webUrl: 'https://mail.zoho.com', mobileUrl: 'https://mail.zoho.com' },
+      // GMX - Use web URL
+      'gmx.com': { name: 'GMX', webUrl: 'https://www.gmx.com', mobileUrl: 'https://www.gmx.com' },
+      'gmx.de': { name: 'GMX', webUrl: 'https://www.gmx.net', mobileUrl: 'https://www.gmx.net' },
+      'gmx.net': { name: 'GMX', webUrl: 'https://www.gmx.net', mobileUrl: 'https://www.gmx.net' },
+      'web.de': { name: 'WEB.DE', webUrl: 'https://web.de', mobileUrl: 'https://web.de' },
+      't-online.de': { name: 'T-Online', webUrl: 'https://email.t-online.de', mobileUrl: 'https://email.t-online.de' },
+    };
+    
+    const provider = providers[domain];
+    if (!provider) return null;
+    
+    return {
+      name: provider.name,
+      url: isMobileDevice ? provider.mobileUrl : provider.webUrl,
+    };
+  };
 
-    if (!forgotPasswordEmail || !forgotPasswordEmail.includes('@')) {
-      setForgotPasswordStatus({
-        success: false,
-        message: 'Please enter a valid email address',
-      });
-      return;
+  const handleResendMagicLink = async (prevState: any, formData: FormData) => {
+    markEmailAsUsed();
+
+    const email = expiredEmailState || formData.get('email') as string;
+    if (!email) {
+      toast.error(t('pleaseEnterValidEmail'));
+      return {};
+    }
+    
+    setRegistrationEmail(email);
+
+    const finalReturnUrl = returnUrl || '/dashboard';
+    formData.append('email', email);
+    formData.append('returnUrl', finalReturnUrl);
+    formData.append('origin', window.location.origin);
+    // If email is already known from expired link, assume terms were already accepted
+    formData.append('acceptedTerms', 'true');
+
+    const result = await resendMagicLink(prevState, formData);
+
+    // Magic link always returns success with message (no immediate redirect)
+    if (result && typeof result === 'object' && 'success' in result && result.success) {
+      if ('email' in result && result.email) {
+        setRegistrationEmail(result.email as string);
+        setLinkExpired(false);
+        setRegistrationSuccess(true);
+        // Clean up URL params
+        const params = new URLSearchParams(window.location.search);
+        params.delete('expired');
+        params.delete('email');
+        window.history.pushState({ path: window.location.pathname }, '', window.location.pathname + (params.toString() ? '?' + params.toString() : ''));
+        return result;
+      }
     }
 
-    const formData = new FormData();
-    formData.append('email', forgotPasswordEmail);
-    formData.append('origin', window.location.origin);
+    if (result && typeof result === 'object' && 'message' in result) {
+      toast.error(t('signUpFailed'), {
+        description: result.message as string,
+        duration: 5000,
+      });
+      return {};
+    }
 
-    const result = await forgotPassword(null, formData);
-
-    setForgotPasswordStatus(result);
+    return result;
   };
 
-  const resetRegistrationSuccess = () => {
-    setRegistrationSuccess(false);
-    // Remove message from URL and set mode to signin
-    const params = new URLSearchParams(window.location.search);
-    params.delete('message');
-    params.set('mode', 'signin');
+  // Don't block render while checking auth - let content show immediately
+  // The useEffect will redirect if user is already authenticated
 
-    const newUrl =
-      window.location.pathname +
-      (params.toString() ? '?' + params.toString() : '');
-
-    window.history.pushState({ path: newUrl }, '', newUrl);
-
-    router.refresh();
-  };
-
-  // Show loading spinner while checking auth state
-  if (isLoading) {
+  // Expired link view - always show resend form (Supabase clears session on expired links anyway)
+  if (linkExpired) {
     return (
-      <main className="flex flex-col items-center justify-center min-h-screen w-full">
-        <Loader2 className="h-12 w-12 animate-spin text-primary" />
-      </main>
+      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+        <div className="w-full max-w-md mx-auto">
+          <div className="text-center">
+            <div className="bg-orange-50 dark:bg-orange-950/20 rounded-full p-4 mb-6 inline-flex">
+              <Clock className="h-12 w-12 text-orange-500 dark:text-orange-400" />
+            </div>
+
+            <h1 className="text-3xl font-semibold text-foreground mb-4">
+              {t('magicLinkExpired')}
+            </h1>
+
+            <p className="text-muted-foreground mb-6">
+              {t('magicLinkExpiredDescription')}
+            </p>
+
+            {expiredEmailState && (
+              <p className="text-lg font-medium mb-6 text-foreground">
+                {expiredEmailState}
+              </p>
+            )}
+
+            <div className="bg-orange-50 dark:bg-orange-950/20 border border-orange-100 dark:border-orange-900/50 rounded-lg p-4 mb-8">
+              <p className="text-sm text-orange-800 dark:text-orange-400">
+                {t('magicLinkDescription')}
+              </p>
+            </div>
+
+            <form className="space-y-4">
+              {!expiredEmailState && (
+                <Input
+                  id="email"
+                  name="email"
+                  type="email"
+                  placeholder={t('emailAddress')}
+                  required
+                  onChange={(e) => setResendEmail(e.target.value)}
+                />
+              )}
+
+              <SubmitButton
+                formAction={handleResendMagicLink}
+                className="w-full h-10"
+                pendingText={t('resending')}
+                disabled={!expiredEmailState && !resendEmail}
+              >
+                {t('resendMagicLink')}
+              </SubmitButton>
+
+              {/* Show "Open X" button when email is known */}
+              {(() => {
+                const email = expiredEmailState || resendEmail;
+                const provider = email ? getEmailProviderInfo(email) : null;
+                if (provider) {
+                  return (
+                    <Button asChild variant="outline" size="lg" className="w-full">
+                      <a
+                        href={provider.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        {t('openProvider', { provider: provider.name })}
+                        <ExternalLink className="h-4 w-4" />
+                      </a>
+                    </Button>
+                  );
+                }
+                return null;
+              })()}
+            </form>
+          </div>
+        </div>
+      </div>
     );
   }
 
   // Registration success view
   if (registrationSuccess) {
     return (
-      <main className="flex flex-col items-center justify-center min-h-screen w-full">
-        <div className="w-full divide-y divide-border">
-          <section className="w-full relative overflow-hidden">
-            <div className="relative flex flex-col items-center w-full px-6">
-              {/* Background elements from the original view */}
-              <div className="absolute left-0 top-0 h-[600px] md:h-[800px] w-1/3 -z-10 overflow-hidden">
-                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-transparent to-background z-10" />
-                <div className="absolute inset-x-0 top-0 h-32 bg-gradient-to-b from-background via-background/90 to-transparent z-10" />
-                <div className="absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-background via-background/90 to-transparent z-10" />
-              </div>
-
-              <div className="absolute right-0 top-0 h-[600px] md:h-[800px] w-1/3 -z-10 overflow-hidden">
-                <div className="absolute inset-0 bg-gradient-to-l from-transparent via-transparent to-background z-10" />
-                <div className="absolute inset-x-0 top-0 h-32 bg-gradient-to-b from-background via-background/90 to-transparent z-10" />
-                <div className="absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-background via-background/90 to-transparent z-10" />
-              </div>
-
-              <div className="absolute inset-x-1/4 top-0 h-[600px] md:h-[800px] -z-20 bg-background rounded-b-xl"></div>
-
-              {/* Success content */}
-              <div className="relative z-10 pt-24 pb-8 max-w-xl mx-auto h-full w-full flex flex-col gap-2 items-center justify-center">
-                <div className="flex flex-col items-center text-center">
-                  <div className="bg-green-50 dark:bg-green-950/20 rounded-full p-4 mb-6">
-                    <MailCheck className="h-12 w-12 text-green-500 dark:text-green-400" />
-                  </div>
-
-                  <h1 className="text-3xl md:text-4xl lg:text-5xl font-medium tracking-tighter text-center text-balance text-primary mb-4">
-                    Check your email
-                  </h1>
-
-                  <p className="text-base md:text-lg text-center text-muted-foreground font-medium text-balance leading-relaxed tracking-tight max-w-md mb-2">
-                    We've sent a confirmation link to:
-                  </p>
-
-                  <p className="text-lg font-medium mb-6">
-                    {registrationEmail || 'your email address'}
-                  </p>
-
-                  <div className="bg-green-50 dark:bg-green-950/20 border border-green-100 dark:border-green-900/50 rounded-lg p-6 mb-8 max-w-md w-full">
-                    <p className="text-sm text-green-800 dark:text-green-400 leading-relaxed">
-                      Click the link in the email to activate your account. If
-                      you don't see the email, check your spam folder.
-                    </p>
-                  </div>
-
-                  <div className="flex flex-col sm:flex-row gap-4 w-full max-w-sm">
-                    <Link
-                      href="/"
-                      className="flex h-12 items-center justify-center w-full text-center rounded-full border border-border bg-background hover:bg-accent/20 transition-all"
-                    >
-                      Return to home
-                    </Link>
-                    <button
-                      onClick={resetRegistrationSuccess}
-                      className="flex h-12 items-center justify-center w-full text-center rounded-full bg-primary text-primary-foreground hover:bg-primary/90 transition-all shadow-md"
-                    >
-                      Back to sign in
-                    </button>
-                  </div>
-                </div>
-              </div>
+      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+        <div className="w-full max-w-md mx-auto">
+          <div className="text-center">
+            <div className="bg-green-50 dark:bg-green-950/20 rounded-full p-4 mb-6 inline-flex">
+              <MailCheck className="h-12 w-12 text-green-500 dark:text-green-400" />
             </div>
-          </section>
+
+            <h1 className="text-3xl font-semibold text-foreground mb-4">
+              {t('checkYourEmail')}
+            </h1>
+
+            <p className="text-muted-foreground mb-2">
+              {t('magicLinkSent') || 'We sent a magic link to'}
+            </p>
+
+            <p className="text-lg font-medium mb-6">
+              {registrationEmail || t('emailAddress')}
+            </p>
+
+            <div className="bg-green-50 dark:bg-green-950/20 border border-green-100 dark:border-green-900/50 rounded-lg p-4 mb-8">
+              <p className="text-sm text-green-800 dark:text-green-400">
+                {t('magicLinkDescription') || 'Click the link in your email to sign in. The link will expire in 1 hour.'}
+              </p>
+            </div>
+
+            {(() => {
+              const provider = registrationEmail ? getEmailProviderInfo(registrationEmail) : null;
+              if (provider) {
+                return (
+                  <Button asChild size="lg" className="w-full">
+                    <a
+                      href={provider.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {t('openProvider', { provider: provider.name })}
+                      <ExternalLink className="h-4 w-4" />
+                    </a>
+                  </Button>
+                );
+              }
+              return null;
+            })()}
+
+            <p className="text-sm text-muted-foreground text-center mt-6">
+              {t('didntReceiveEmail')}{' '}
+              <button
+                onClick={() => {
+                  setRegistrationSuccess(false);
+                  const params = new URLSearchParams(window.location.search);
+                  params.set('mode', 'signin');
+                  const newUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
+                  window.history.pushState({ path: newUrl }, '', newUrl);
+                }}
+                className="text-primary hover:underline font-medium"
+              >
+                {t('resend')}
+              </button>
+            </p>
+          </div>
         </div>
-      </main>
+      </div>
     );
   }
 
   return (
-    <main className="flex flex-col items-center justify-center min-h-screen w-full">
-      <div className="w-full divide-y divide-border">
-        {/* Hero-like header with flickering grid */}
-        <section className="w-full relative overflow-hidden">
-          <div className="relative flex flex-col items-center w-full px-6">
-            {/* Left side flickering grid with gradient fades */}
-            <div className="absolute left-0 top-0 h-[600px] md:h-[800px] w-1/3 -z-10 overflow-hidden">
-              {/* Horizontal fade from left to right */}
-              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-transparent to-background z-10" />
-
-              {/* Vertical fade from top */}
-              <div className="absolute inset-x-0 top-0 h-32 bg-gradient-to-b from-background via-background/90 to-transparent z-10" />
-
-              {/* Vertical fade to bottom */}
-              <div className="absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-background via-background/90 to-transparent z-10" />
-
-              <div className="h-full w-full">
-                <FlickeringGrid
-                  className="h-full w-full"
-                  squareSize={mounted && tablet ? 2 : 2.5}
-                  gridGap={mounted && tablet ? 2 : 2.5}
-                  color="var(--secondary)"
-                  maxOpacity={0.4}
-                  flickerChance={isScrolling ? 0.01 : 0.03}
-                />
-              </div>
-            </div>
-
-            {/* Right side flickering grid with gradient fades */}
-            <div className="absolute right-0 top-0 h-[600px] md:h-[800px] w-1/3 -z-10 overflow-hidden">
-              {/* Horizontal fade from right to left */}
-              <div className="absolute inset-0 bg-gradient-to-l from-transparent via-transparent to-background z-10" />
-
-              {/* Vertical fade from top */}
-              <div className="absolute inset-x-0 top-0 h-32 bg-gradient-to-b from-background via-background/90 to-transparent z-10" />
-
-              {/* Vertical fade to bottom */}
-              <div className="absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-background via-background/90 to-transparent z-10" />
-
-              <div className="h-full w-full">
-                <FlickeringGrid
-                  className="h-full w-full"
-                  squareSize={mounted && tablet ? 2 : 2.5}
-                  gridGap={mounted && tablet ? 2 : 2.5}
-                  color="var(--secondary)"
-                  maxOpacity={0.4}
-                  flickerChance={isScrolling ? 0.01 : 0.03}
-                />
-              </div>
-            </div>
-
-            {/* Center content background with rounded bottom */}
-            <div className="absolute inset-x-1/4 top-0 h-[600px] md:h-[800px] -z-20 bg-background rounded-b-xl"></div>
-
-            {/* Header content */}
-            <div className="relative z-10 pt-24 pb-8 max-w-md mx-auto h-full w-full flex flex-col gap-2 items-center justify-center">
-              <Link
-                href="/"
-                className="group border border-border/50 bg-background hover:bg-accent/20 rounded-full text-sm h-8 px-3 flex items-center gap-2 transition-all duration-200 shadow-sm mb-6"
-              >
-                <ArrowLeft className="h-4 w-4 text-muted-foreground" />
-                <span className="font-medium text-muted-foreground text-xs tracking-wide">
-                  Back to home
-                </span>
-              </Link>
-
-              <h1 className="text-3xl md:text-4xl lg:text-5xl font-medium tracking-tighter text-center text-balance text-primary">
-                {isSignUp ? 'Join Suna' : 'Welcome back'}
+    <div className="min-h-screen bg-background relative">
+      <div className="absolute top-6 left-6 z-10">
+        <Link href="/" className="flex items-center space-x-2">
+          <KortixLogo size={28} />
+        </Link>
+      </div>
+      <div className="flex min-h-screen">
+        <div className="relative flex-1 flex items-center justify-center p-4 lg:p-8">
+          <div className="w-full max-w-sm">
+            <div className="mb-4 flex items-center flex-col gap-3 sm:gap-4 justify-center">
+              <h1 className="text-xl sm:text-2xl font-semibold text-foreground text-center leading-tight">
+                {t('signInOrCreateAccount')}
               </h1>
-              <p className="text-base md:text-lg text-center text-muted-foreground font-medium text-balance leading-relaxed tracking-tight mt-2 mb-6">
-                {isSignUp
-                  ? 'Create your account and start building with AI'
-                  : 'Sign in to your account to continue'}
-              </p>
             </div>
-          </div>
+            <div className="space-y-3 mb-4">
+              <Suspense fallback={<div className="h-11 bg-muted/20 rounded-full animate-pulse" />}>
+                <GoogleSignIn returnUrl={returnUrl || undefined} referralCode={referralCode} />
+              </Suspense>
+              {/* GitHub auth commented out
+              <Suspense fallback={<div className="h-11 bg-muted/20 rounded-full animate-pulse" />}>
+                <GitHubSignIn returnUrl={returnUrl || undefined} referralCode={referralCode} />
+              </Suspense>
+              */}
+            </div>
+            <div className="relative my-4">
+              <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-border"></div>
+              </div>
+              <div className="relative flex justify-center text-sm">
+                <span className="px-2 bg-background text-muted-foreground">
+                  {t('orEmail')}
+                </span>
+              </div>
+            </div>
+            <form className="space-y-4">
+              <Input
+                id="email"
+                name="email"
+                type="email"
+                placeholder={t('emailAddress')}
+                required
+              />
 
-          {/* Auth form card */}
-          <div className="relative z-10 flex justify-center px-6 pb-24">
-            <div className="w-full max-w-md rounded-xl bg-[#F3F4F6] dark:bg-[#F9FAFB]/[0.02] border border-border p-8">
-              {/* Non-registration related messages */}
-              {message && !isSuccessMessage && (
-                <div className="mb-6 p-4 rounded-lg flex items-center gap-3 bg-secondary/10 border border-secondary/20 text-secondary">
-                  <AlertCircle className="h-5 w-5 flex-shrink-0 text-secondary" />
-                  <span className="text-sm font-medium">{message}</span>
+              {referralCodeParam && (
+                <div className="bg-card border rounded-xl p-3">
+                  <p className="text-xs text-muted-foreground mb-1">{t('referralCode')}</p>
+                  <p className="text-sm font-semibold">{referralCode}</p>
                 </div>
               )}
 
-              {/* Google Sign In */}
-              <div className="w-full">
-                <GoogleSignIn returnUrl={returnUrl || undefined} />
+              {!referralCodeParam && <input type="hidden" name="referralCode" value={referralCode} />}
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="gdprConsent"
+                  checked={acceptedTerms}
+                  onCheckedChange={(checked) => setAcceptedTerms(checked === true)}
+                  required
+                  className="h-5 w-5"
+                />
+                <label 
+                  htmlFor="gdprConsent" 
+                  className="text-xs text-muted-foreground leading-relaxed cursor-pointer select-none flex-1"
+                >
+                  {t.rich('acceptPrivacyTerms', {
+                    privacyPolicy: (chunks) => {
+                      return (
+                        <a 
+                          href="https://www.kortix.com/legal?tab=privacy" 
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="hover:underline underline-offset-2 text-primary"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {chunks}
+                        </a>
+                      );
+                    },
+                    termsOfService: (chunks) => {
+                      return (
+                        <a 
+                          href="https://www.kortix.com/legal?tab=terms"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="hover:underline underline-offset-2 text-primary"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {chunks}
+                        </a>
+                      );
+                    }
+                  })}
+                </label>
               </div>
 
-              {/* Divider */}
-              <div className="relative my-8">
-                <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-border"></div>
-                </div>
-                <div className="relative flex justify-center text-sm">
-                  <span className="px-2 bg-[#F3F4F6] dark:bg-[#F9FAFB]/[0.02] text-muted-foreground">
-                    or continue with email
-                  </span>
-                </div>
-              </div>
-
-              {/* Form */}
-              <form className="space-y-4">
-                <div>
-                  <Input
-                    id="email"
-                    name="email"
-                    type="email"
-                    placeholder="Email address"
-                    className="h-12 rounded-full bg-background border-border"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <Input
-                    id="password"
-                    name="password"
-                    type="password"
-                    placeholder="Password"
-                    className="h-12 rounded-full bg-background border-border"
-                    required
-                  />
-                </div>
-
-                {isSignUp && (
-                  <div>
-                    <Input
-                      id="confirmPassword"
-                      name="confirmPassword"
-                      type="password"
-                      placeholder="Confirm password"
-                      className="h-12 rounded-full bg-background border-border"
-                      required
-                    />
+              <div className="relative">
+                <SubmitButton
+                  formAction={handleAuth}
+                  className="w-full h-10"
+                  pendingText={t('sending')}
+                  disabled={!acceptedTerms}
+                >
+                  {t('sendMagicLink')}
+                </SubmitButton>
+                {wasEmailLastMethod && (
+                  <div className="absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full border-2 border-background shadow-sm">
+                    <div className="w-full h-full bg-green-500 rounded-full animate-pulse" />
                   </div>
                 )}
-
-                <div className="space-y-4 pt-4">
-                  {!isSignUp ? (
-                    <>
-                      <SubmitButton
-                        formAction={handleSignIn}
-                        className="w-full h-12 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 transition-all shadow-md"
-                        pendingText="Signing in..."
-                      >
-                        Sign in
-                      </SubmitButton>
-
-                      <Link
-                        href={`/auth?mode=signup${returnUrl ? `&returnUrl=${returnUrl}` : ''}`}
-                        className="flex h-12 items-center justify-center w-full text-center rounded-full border border-border bg-background hover:bg-accent/20 transition-all"
-                      >
-                        Create new account
-                      </Link>
-                    </>
-                  ) : (
-                    <>
-                      <SubmitButton
-                        formAction={handleSignUp}
-                        className="w-full h-12 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 transition-all shadow-md"
-                        pendingText="Creating account..."
-                      >
-                        Sign up
-                      </SubmitButton>
-
-                      <Link
-                        href={`/auth${returnUrl ? `?returnUrl=${returnUrl}` : ''}`}
-                        className="flex h-12 items-center justify-center w-full text-center rounded-full border border-border bg-background hover:bg-accent/20 transition-all"
-                      >
-                        Back to sign in
-                      </Link>
-                    </>
-                  )}
-                </div>
-
-                {!isSignUp && (
-                  <div className="text-center pt-2">
-                    <button
-                      type="button"
-                      onClick={() => setForgotPasswordOpen(true)}
-                      className="text-sm text-primary hover:underline"
-                    >
-                      Forgot password?
-                    </button>
-                  </div>
-                )}
-              </form>
-
-              <div className="mt-8 text-center text-xs text-muted-foreground">
-                By continuing, you agree to our{' '}
-                <Link href="/terms" className="text-primary hover:underline">
-                  Terms of Service
-                </Link>{' '}
-                and{' '}
-                <Link href="/privacy" className="text-primary hover:underline">
-                  Privacy Policy
-                </Link>
               </div>
-            </div>
-          </div>
-        </section>
-      </div>
 
-      {/* Forgot Password Dialog */}
-      <Dialog open={forgotPasswordOpen} onOpenChange={setForgotPasswordOpen}>
-        <DialogContent className="sm:max-w-md rounded-xl bg-[#F3F4F6] dark:bg-[#17171A] border border-border [&>button]:hidden">
-          <DialogHeader>
-            <div className="flex items-center justify-between">
-              <DialogTitle className="text-xl font-medium">
-                Reset Password
-              </DialogTitle>
-              <button
-                onClick={() => setForgotPasswordOpen(false)}
-                className="rounded-full p-1 hover:bg-muted transition-colors"
-              >
-                <X className="h-4 w-4 text-muted-foreground" />
-              </button>
-            </div>
-            <DialogDescription className="text-muted-foreground">
-              Enter your email address and we'll send you a link to reset your
-              password.
-            </DialogDescription>
-          </DialogHeader>
-
-          <form onSubmit={handleForgotPassword} className="space-y-4 py-4">
-            <Input
-              id="forgot-password-email"
-              type="email"
-              placeholder="Email address"
-              value={forgotPasswordEmail}
-              onChange={(e) => setForgotPasswordEmail(e.target.value)}
-              className="h-12 rounded-full bg-background border-border"
-              required
+              {/* Magic Link Explanation */}
+              <p className="text-xs text-muted-foreground text-center">
+                {t('magicLinkExplanation')}
+              </p>
+              
+              {/* Minimal Referral Link */}
+              {!referralCodeParam && (
+                <button
+                  type="button"
+                  onClick={() => setShowReferralDialog(true)}
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors w-full text-center mt-1"
+                >
+                  Have a referral code?
+                </button>
+              )}
+            </form>
+            
+            {/* Referral Code Dialog */}
+            <ReferralCodeDialog
+              open={showReferralDialog}
+              onOpenChange={setShowReferralDialog}
+              referralCode={referralCode}
+              onCodeChange={(code) => {
+                setReferralCode(code);
+                setShowReferralDialog(false);
+              }}
             />
-
-            {forgotPasswordStatus.message && (
-              <div
-                className={`p-4 rounded-lg flex items-center gap-3 ${
-                  forgotPasswordStatus.success
-                    ? 'bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-900/50 text-green-800 dark:text-green-400'
-                    : 'bg-secondary/10 border border-secondary/20 text-secondary'
-                }`}
-              >
-                {forgotPasswordStatus.success ? (
-                  <CheckCircle className="h-5 w-5 flex-shrink-0 text-green-500 dark:text-green-400" />
-                ) : (
-                  <AlertCircle className="h-5 w-5 flex-shrink-0 text-secondary" />
-                )}
-                <span className="text-sm font-medium">
-                  {forgotPasswordStatus.message}
-                </span>
-              </div>
-            )}
-
-            <DialogFooter className="flex sm:justify-start gap-3 pt-2">
-              <button
-                type="submit"
-                className="h-12 px-6 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 transition-all shadow-md"
-              >
-                Send Reset Link
-              </button>
-              <button
-                type="button"
-                onClick={() => setForgotPasswordOpen(false)}
-                className="h-12 px-6 rounded-full border border-border bg-background hover:bg-accent/20 transition-all"
-              >
-                Cancel
-              </button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-    </main>
+          </div>
+        </div>
+        <div className="hidden lg:flex flex-1 items-center justify-center relative overflow-hidden">
+          <div className="absolute inset-0 bg-gradient-to-br from-background via-background to-accent/10" />
+          <div className="absolute inset-0 overflow-hidden pointer-events-none z-0">
+            <Suspense fallback={null}>
+              <AnimatedBg
+                variant="hero"
+                customArcs={{
+                  left: [
+                    { pos: { left: -120, top: 150 }, opacity: 0.15 },
+                    { pos: { left: -120, top: 400 }, opacity: 0.18 },
+                  ],
+                  right: [
+                    { pos: { right: -150, top: 50 }, opacity: 0.2 },
+                    { pos: { right: 10, top: 650 }, opacity: 0.17 },
+                  ]
+                }}
+              />
+            </Suspense>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -584,9 +537,9 @@ export default function Login() {
   return (
     <Suspense
       fallback={
-        <main className="flex flex-col items-center justify-center min-h-screen w-full">
-          <div className="w-12 h-12 rounded-full border-4 border-primary border-t-transparent animate-spin"></div>
-        </main>
+        <div className="min-h-screen bg-background flex items-center justify-center">
+          <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+        </div>
       }
     >
       <LoginContent />

@@ -4,8 +4,8 @@ import { getAll } from '@vercel/edge-config';
 export type IMaintenanceNotice =
   | {
       enabled: true;
-      startTime: Date;
-      endTime: Date;
+      startTime: string; // Date
+      endTime: string; // Date
     }
   | {
       enabled: false;
@@ -18,7 +18,6 @@ export const maintenanceNoticeFlag = flag({
   async decide() {
     try {
       if (!process.env.EDGE_CONFIG) {
-        console.warn('Edge config is not set');
         return { enabled: false } as const;
       }
 
@@ -28,23 +27,36 @@ export const maintenanceNoticeFlag = flag({
         'maintenance-notice_enabled',
       ]);
 
-      if (!flags['maintenance-notice_enabled']) {
+      if (!flags || Object.keys(flags).length === 0) {
         return { enabled: false } as const;
       }
 
-      const startTime = new Date(flags['maintenance-notice_start-time']);
-      const endTime = new Date(flags['maintenance-notice_end-time']);
+      const enabled = flags['maintenance-notice_enabled'];
+
+      if (!enabled) {
+        return { enabled: false } as const;
+      }
+
+      const startTimeRaw = flags['maintenance-notice_start-time'];
+      const endTimeRaw = flags['maintenance-notice_end-time'];
+
+      if (!startTimeRaw || !endTimeRaw) {
+        return { enabled: false } as const;
+      }
+
+      const startTime = new Date(startTimeRaw);
+      const endTime = new Date(endTimeRaw);
 
       if (isNaN(startTime.getTime()) || isNaN(endTime.getTime())) {
         throw new Error(
-          `Invalid maintenance notice start or end time: ${flags['maintenance-notice_start-time']} or ${flags['maintenance-notice_end-time']}`,
+          `Invalid maintenance notice start or end time: ${startTimeRaw} or ${endTimeRaw}`,
         );
       }
 
       return {
         enabled: true,
-        startTime,
-        endTime,
+        startTime: startTime.toISOString(),
+        endTime: endTime.toISOString(),
       } as const;
     } catch (cause) {
       console.error(

@@ -6,21 +6,34 @@ on:
       - main
       - PRODUCTION
   workflow_dispatch:
+  repository_dispatch:
+    types: [production-updated]
 
 permissions:
   contents: read
   packages: write
+  id-token: write
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'repository_dispatch' && 'PRODUCTION' || github.ref }}
 
       - name: Get tag name
         shell: bash
         run: |
-          if [[ "${GITHUB_REF#refs/heads/}" == "main" ]]; then
+          echo "Event name: ${{ github.event_name }}"
+          echo "Current ref: ${{ github.ref }}"
+          echo "Branch: ${GITHUB_REF#refs/heads/}"
+          
+          if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+            echo "Triggered by repository dispatch - setting prod environment"
+            echo "branch=prod" >> $GITHUB_OUTPUT
+            echo "environment=prod" >> $GITHUB_OUTPUT
+          elif [[ "${GITHUB_REF#refs/heads/}" == "main" ]]; then
             echo "branch=latest" >> $GITHUB_OUTPUT
             echo "environment=staging" >> $GITHUB_OUTPUT
           elif [[ "${GITHUB_REF#refs/heads/}" == "PRODUCTION" ]]; then
@@ -30,6 +43,7 @@ jobs:
             echo "branch=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" >> $GITHUB_OUTPUT
             echo "environment=staging" >> $GITHUB_OUTPUT
           fi
+          echo "aws_region=us-west-2" >> $GITHUB_OUTPUT
         id: get_tag_name
 
       - name: Set up Docker Buildx
@@ -57,24 +71,102 @@ jobs:
         if: steps.get_tag_name.outputs.environment == 'staging'
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.STAGING_HOST }}
-          username: ${{ secrets.STAGING_USERNAME }}
-          key: ${{ secrets.STAGING_KEY }}
+          host: ${{ secrets.AWS_STAGING_HOST }}
+          username: ${{ secrets.AWS_STAGING_USERNAME }}
+          key: ${{ secrets.AWS_STAGING_KEY }}
           script: |
-            cd /home/suna/backend
-            git pull
+            cd /home/ubuntu/suna/backend
+            git fetch origin main
+            git reset --hard origin/main
+            set -a && source .env && set +a
+            
+            echo "=== Pre-deployment disk usage ==="
+            df -h / | tail -1
+            
+            # Clean up old images to save space
+            echo "=== Cleaning up old images ==="
+            docker image prune -af --filter "until=24h" || true
+            
+            # Build and deploy - Docker Compose handles orchestration
+            echo "=== Building and deploying services ==="
             docker compose build
-            docker compose up -d
+            docker compose up -d --remove-orphans
+            
+            # Quick cleanup
+            echo "=== Post-deployment cleanup ==="
+            docker image prune -af --filter "until=1h" || true
+            docker builder prune -af --keep-storage=2GB || true
+            
+            echo "=== Deployment complete ==="
+            docker compose ps
+            df -h / | tail -1
 
-      - name: Deploy to prod
+      # - name: Deploy to staging [legacy]
+      #   if: steps.get_tag_name.outputs.environment == 'staging'
+      #   uses: appleboy/ssh-action@v1
+      #   with:
+      #     host: ${{ secrets.STAGING_HOST }}
+      #     username: ${{ secrets.STAGING_USERNAME }}
+      #     key: ${{ secrets.STAGING_KEY }}
+      #     script: |
+      #       cd /home/suna/backend
+      #       git fetch origin main
+      #       git reset --hard origin/main
+      #       docker compose down
+      #       docker compose build
+      #       docker compose up -d
+
+      - name: Configure AWS credentials
         if: steps.get_tag_name.outputs.environment == 'prod'
-        uses: appleboy/ssh-action@v1
+        uses: aws-actions/configure-aws-credentials@v5
         with:
-          host: ${{ secrets.PROD_HOST }}
-          username: ${{ secrets.PROD_USERNAME }}
-          key: ${{ secrets.PROD_KEY }}
-          script: |
-            cd /home/suna/backend
-            git pull
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml build
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+          role-to-assume: ${{ secrets.AWS_DEPLOYMENT_ROLE }}
+          aws-region: ${{ steps.get_tag_name.outputs.aws_region }}
+
+      - name: Update ECS services
+        if: steps.get_tag_name.outputs.environment == 'prod'
+        run: |
+          set -e
+          REGION="${{ steps.get_tag_name.outputs.aws_region }}"
+          CLUSTER="suna-ecs"
+          
+          # Get all service ARNs
+          SERVICES=$(aws ecs list-services --cluster $CLUSTER --region $REGION --query 'serviceArns' --output text)
+          
+          # Update API service
+          API_SERVICE_ARN=$(echo $SERVICES | tr ' ' '\n' | grep 'suna-api-svc' | head -1)
+          if [ -n "$API_SERVICE_ARN" ]; then
+            API_SERVICE=$(echo $API_SERVICE_ARN | awk -F'/' '{print $NF}')
+            echo "Updating API service: $API_SERVICE"
+            aws ecs update-service \
+              --cluster $CLUSTER \
+              --service $API_SERVICE \
+              --force-new-deployment \
+              --region $REGION \
+              --no-cli-pager
+          fi
+          
+          # Update Worker service
+          WORKER_SERVICE_ARN=$(echo $SERVICES | tr ' ' '\n' | grep 'suna-worker-svc' | head -1)
+          if [ -n "$WORKER_SERVICE_ARN" ]; then
+            WORKER_SERVICE=$(echo $WORKER_SERVICE_ARN | awk -F'/' '{print $NF}')
+            echo "Updating Worker service: $WORKER_SERVICE"
+            aws ecs update-service \
+              --cluster $CLUSTER \
+              --service $WORKER_SERVICE \
+              --force-new-deployment \
+              --region $REGION \
+              --no-cli-pager
+          fi
+
+      # - name: Deploy to prod [legacy]
+      #   if: steps.get_tag_name.outputs.environment == 'prod'
+      #   uses: appleboy/ssh-action@v1
+      #   with:
+      #     host: ${{ secrets.PROD_HOST }}
+      #     username: ${{ secrets.PROD_USERNAME }}
+      #     key: ${{ secrets.PROD_KEY }}
+      #     script: |
+      #       cd /mnt/gluster-shared/data/infra/suna
+      #       set -a; source .env; set +a
+      #       docker stack deploy -c docker-compose.yml suna

@@ -22,8 +22,57 @@ import {
   listSandboxFiles,
   getSandboxFileContent,
   type FileInfo,
-} from '@/lib/api';
+} from '@/lib/api/sandbox';
 import { toast } from 'sonner';
+import { useDownloadRestriction } from '@/hooks/billing';
+import { useDraggable } from '@dnd-kit/core';
+import { cn } from '@/lib/utils';
+
+// Draggable file item component
+function DraggableFileItem({
+  file,
+  selectedFile,
+  onClick
+}: {
+  file: FileInfo;
+  selectedFile: string | null;
+  onClick: () => void;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    isDragging,
+  } = useDraggable({
+    id: `file-browser-${file.path}`,
+    data: {
+      type: 'external-file',
+      file: file,
+      source: 'file-browser'
+    }
+  });
+
+  const style = transform ? {
+    transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`,
+    opacity: isDragging ? 0.5 : 1,
+  } : undefined;
+
+  return (
+    <Button
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      variant={selectedFile === file.path ? 'secondary' : 'ghost'}
+      className="w-full justify-start text-sm mb-1 cursor-grab active:cursor-grabbing"
+      onClick={onClick}
+    >
+      <FileText className="h-4 w-4 mr-2" />
+      {file.name}
+    </Button>
+  );
+}
 
 interface FileBrowserProps {
   sandboxId: string;
@@ -43,6 +92,11 @@ export function FileBrowser({
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [breadcrumbs, setBreadcrumbs] = useState<string[]>([]);
+  
+  // Download restriction for free tier users
+  const { isRestricted: isDownloadRestricted, openUpgradeModal } = useDownloadRestriction({
+    featureName: 'files',
+  });
 
   // Reset state when dialog opens
   useEffect(() => {
@@ -126,6 +180,29 @@ export function FileBrowser({
     }
   };
 
+  const handleAddToKnowledgeBase = () => {
+    if (isDownloadRestricted) {
+      openUpgradeModal();
+      return;
+    }
+    if (selectedFile && fileContent) {
+      // Create a blob and download the file so user can upload it to knowledge base
+      const blob = new Blob([fileContent], { type: 'text/plain' });
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = selectedFile.split('/').pop() || 'file.txt';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      toast.success('File downloaded - you can now upload it to knowledge base using the Upload Files button');
+      setIsOpen(false);
+    }
+  };
+
   return (
     <Dialog open={isOpen} onOpenChange={setIsOpen}>
       <DialogTrigger asChild>
@@ -137,29 +214,41 @@ export function FileBrowser({
         </DialogHeader>
 
         {/* Breadcrumbs */}
-        <div className="flex items-center space-x-1 text-sm py-2 border-b">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 px-2"
+        <div className="flex items-center gap-3 py-3 border-b bg-zinc-50/80 dark:bg-zinc-900/80 -mx-6 px-6 -mt-2">
+          <button
             onClick={() => navigateToBreadcrumb(-1)}
+            className="relative p-2 rounded-lg border flex-shrink-0 bg-gradient-to-br from-zinc-100 to-zinc-50 dark:from-zinc-800 dark:to-zinc-900 border-zinc-200 dark:border-zinc-700 hover:from-zinc-200 hover:to-zinc-100 dark:hover:from-zinc-700 dark:hover:to-zinc-800 transition-all"
+            title="Root"
           >
-            <Folder className="h-4 w-4 mr-1" />
-            root
-          </Button>
-          {breadcrumbs.map((part, index) => (
-            <div key={index} className="flex items-center">
-              <ChevronRight className="h-4 w-4 text-muted-foreground" />
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 px-2"
-                onClick={() => navigateToBreadcrumb(index)}
-              >
-                {part}
-              </Button>
+            <Folder className="h-5 w-5 text-zinc-600 dark:text-zinc-400" />
+          </button>
+          
+          {breadcrumbs.length === 0 ? (
+            <span className="text-base font-medium text-zinc-900 dark:text-zinc-100">
+              Root
+            </span>
+          ) : (
+            <div className="flex items-center gap-1.5 min-w-0">
+              {breadcrumbs.map((part, index) => (
+                <div key={index} className="flex items-center gap-1.5">
+                  {index > 0 && (
+                    <span className="text-zinc-400 dark:text-zinc-600">/</span>
+                  )}
+                  <button
+                    onClick={() => navigateToBreadcrumb(index)}
+                    className={cn(
+                      "text-base transition-colors truncate max-w-[150px]",
+                      index === breadcrumbs.length - 1 
+                        ? "text-zinc-900 dark:text-zinc-100 font-medium" 
+                        : "text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100"
+                    )}
+                  >
+                    {part}
+                  </button>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
 
         <div className="grid grid-cols-2 gap-4 flex-1 overflow-hidden">
@@ -195,19 +284,24 @@ export function FileBrowser({
                   </Button>
                 )}
                 {files.map((file) => (
-                  <Button
-                    key={file.path}
-                    variant={selectedFile === file.path ? 'secondary' : 'ghost'}
-                    className="w-full justify-start text-sm mb-1"
-                    onClick={() => handleItemClick(file)}
-                  >
-                    {file.is_dir ? (
+                  file.is_dir ? (
+                    <Button
+                      key={file.path}
+                      variant="ghost"
+                      className="w-full justify-start text-sm mb-1"
+                      onClick={() => handleItemClick(file)}
+                    >
                       <Folder className="h-4 w-4 mr-2" />
-                    ) : (
-                      <FileText className="h-4 w-4 mr-2" />
-                    )}
-                    {file.name}
-                  </Button>
+                      {file.name}
+                    </Button>
+                  ) : (
+                    <DraggableFileItem
+                      key={file.path}
+                      file={file}
+                      selectedFile={selectedFile}
+                      onClick={() => handleItemClick(file)}
+                    />
+                  )
                 ))}
               </div>
             )}
@@ -238,7 +332,10 @@ export function FileBrowser({
         </div>
 
         {selectedFile && fileContent && onSelectFile && (
-          <div className="flex justify-end pt-2">
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={handleAddToKnowledgeBase}>
+              Add to Knowledge Base
+            </Button>
             <Button onClick={handleSelectFile}>Select File</Button>
           </div>
         )}

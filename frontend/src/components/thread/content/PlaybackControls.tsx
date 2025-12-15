@@ -1,44 +1,25 @@
 import React, { useCallback, useEffect, useState, useRef } from 'react';
 import { Button } from '@/components/ui/button';
-import { Play, Pause, ArrowDown, FileText, Info } from 'lucide-react';
+import {
+  Play,
+  Pause,
+  ArrowDown,
+  FileText,
+  PanelRightOpen,
+  ArrowUp,
+} from 'lucide-react';
 import { UnifiedMessage } from '@/components/thread/types';
 import { safeJsonParse } from '@/components/thread/utils';
 import Link from 'next/link';
-
-// Define the set of tags whose raw XML should be hidden during streaming
-const HIDE_STREAMING_XML_TAGS = new Set([
-  'execute-command',
-  'create-file',
-  'delete-file',
-  'full-file-rewrite',
-  'str-replace',
-  'browser-click-element',
-  'browser-close-tab',
-  'browser-drag-drop',
-  'browser-get-dropdown-options',
-  'browser-go-back',
-  'browser-input-text',
-  'browser-navigate-to',
-  'browser-scroll-down',
-  'browser-scroll-to-text',
-  'browser-scroll-up',
-  'browser-select-dropdown-option',
-  'browser-send-keys',
-  'browser-switch-tab',
-  'browser-wait',
-  'deploy',
-  'ask',
-  'complete',
-  'crawl-webpage',
-  'web-search',
-]);
+import { HIDE_STREAMING_XML_TAGS } from '@/components/thread/utils';
+import { KortixLogo } from '@/components/sidebar/kortix-logo';
 
 export interface PlaybackControlsProps {
   messages: UnifiedMessage[];
   isSidePanelOpen: boolean;
   onToggleSidePanel: () => void;
   toolCalls: any[];
-  setCurrentToolIndex: (index: number) => void;
+  setCurrentToolIndex: React.Dispatch<React.SetStateAction<number>>;
   onFileViewerOpen: () => void;
   projectName?: string;
 }
@@ -50,7 +31,6 @@ export interface PlaybackState {
   streamingText: string;
   isStreamingText: boolean;
   currentToolCall: any | null;
-  toolPlaybackIndex: number;
 }
 
 export interface PlaybackController {
@@ -62,6 +42,7 @@ export interface PlaybackController {
   togglePlayback: () => void;
   resetPlayback: () => void;
   skipToEnd: () => void;
+  forward: (step?: number) => void;
 }
 
 export const PlaybackControls = ({
@@ -76,11 +57,10 @@ export const PlaybackControls = ({
   const [playbackState, setPlaybackState] = useState<PlaybackState>({
     isPlaying: false,
     currentMessageIndex: 0,
-    visibleMessages: [],
+    visibleMessages: messages.length > 0 ? [messages[0]] : [], // Start with just the first message
     streamingText: '',
     isStreamingText: false,
     currentToolCall: null,
-    toolPlaybackIndex: -1,
   });
 
   // Extract state variables for easier access
@@ -91,13 +71,32 @@ export const PlaybackControls = ({
     streamingText,
     isStreamingText,
     currentToolCall,
-    toolPlaybackIndex,
   } = playbackState;
+
+  const playbackTimeout = useRef<NodeJS.Timeout | null>(null);
+  const [isToolInitialized, setIsToolInitialized] = useState(false);
+  const playbackStateRef = useRef(playbackState);
+  const isProcessingRef = useRef(false);
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    playbackStateRef.current = playbackState;
+  }, [playbackState]);
 
   // Helper function to update playback state
   const updatePlaybackState = useCallback((updates: Partial<PlaybackState>) => {
     setPlaybackState((prev) => ({ ...prev, ...updates }));
   }, []);
+
+  // Sync visible messages when messages prop changes (for initial load)
+  useEffect(() => {
+    if (messages.length > 0 && visibleMessages.length === 0) {
+      setPlaybackState((prev) => ({
+        ...prev,
+        visibleMessages: [messages[0]], // Show only first message initially
+      }));
+    }
+  }, [messages.length, visibleMessages.length]);
 
   // Define togglePlayback and resetPlayback functions
   const togglePlayback = useCallback(() => {
@@ -109,7 +108,7 @@ export const PlaybackControls = ({
     if (!isPlaying && !isSidePanelOpen) {
       onToggleSidePanel();
     }
-  }, [isPlaying, isSidePanelOpen, onToggleSidePanel]);
+  }, [isPlaying, isSidePanelOpen, onToggleSidePanel, updatePlaybackState]);
 
   const resetPlayback = useCallback(() => {
     updatePlaybackState({
@@ -119,9 +118,60 @@ export const PlaybackControls = ({
       streamingText: '',
       isStreamingText: false,
       currentToolCall: null,
-      toolPlaybackIndex: -1,
     });
-  }, [updatePlaybackState]);
+    setCurrentToolIndex(0);
+    setIsToolInitialized(false);
+
+    if (playbackTimeout.current) {
+      clearTimeout(playbackTimeout.current);
+    }
+
+    // If the side panel is open, close it
+    if (isSidePanelOpen) {
+      onToggleSidePanel();
+    }
+  }, [
+    updatePlaybackState,
+    setCurrentToolIndex,
+    isSidePanelOpen,
+    onToggleSidePanel,
+  ]);
+
+  const forward = useCallback(
+    (step: number = 1) => {
+      const newMessageIndex = Math.min(
+        currentMessageIndex + step,
+        messages.length,
+      );
+
+      if (!isSidePanelOpen) {
+        onToggleSidePanel();
+      }
+
+      // If we're moving to a new message, update the visible messages
+      if (newMessageIndex > currentMessageIndex) {
+        const newVisibleMessages = messages.slice(0, newMessageIndex);
+        updatePlaybackState({
+          currentMessageIndex: newMessageIndex,
+          visibleMessages: newVisibleMessages,
+          streamingText: '',
+          isStreamingText: false,
+        });
+      }
+
+      // If we're at the end, stop playback
+      if (newMessageIndex >= messages.length) {
+        updatePlaybackState({ isPlaying: false });
+      }
+    },
+    [
+      currentMessageIndex,
+      messages,
+      isSidePanelOpen,
+      onToggleSidePanel,
+      updatePlaybackState,
+    ],
+  );
 
   const skipToEnd = useCallback(() => {
     updatePlaybackState({
@@ -131,7 +181,6 @@ export const PlaybackControls = ({
       streamingText: '',
       isStreamingText: false,
       currentToolCall: null,
-      toolPlaybackIndex: toolCalls.length - 1,
     });
 
     if (toolCalls.length > 0) {
@@ -152,9 +201,15 @@ export const PlaybackControls = ({
   // Streaming text function
   const streamText = useCallback(
     (text: string, onComplete: () => void) => {
-      if (!text || !isPlaying) {
+      if (!text) {
         onComplete();
-        return () => {};
+        return () => { };
+      }
+
+      // Check isPlaying from ref, not closure
+      if (!playbackStateRef.current.isPlaying) {
+        onComplete();
+        return () => { };
       }
 
       updatePlaybackState({
@@ -181,11 +236,9 @@ export const PlaybackControls = ({
         }
 
         // Add the tool call
-        const toolName = match[1] || match[2];
         chunks.push({
           text: match[0],
           isTool: true,
-          toolName,
         });
 
         lastIndex = toolCallRegex.lastIndex;
@@ -205,8 +258,8 @@ export const PlaybackControls = ({
       let isPaused = false;
 
       const processNextCharacter = () => {
-        // Check if component is unmounted or playback is stopped
-        if (!isPlaying || isPaused) {
+        // Check if component is unmounted or playback is stopped - use ref for current state
+        if (!playbackStateRef.current.isPlaying || isPaused) {
           setTimeout(processNextCharacter, 100); // Check again after a short delay
           return;
         }
@@ -245,40 +298,24 @@ export const PlaybackControls = ({
         // If this is a tool call chunk and we're at the start of it
         if (currentChunk.isTool && currentIndex === 0) {
           // For tool calls, check if they should be hidden during streaming
-          if (
-            currentChunk.toolName &&
-            HIDE_STREAMING_XML_TAGS.has(currentChunk.toolName)
-          ) {
-            // Instead of showing the XML, create a tool call object
-            const toolCall = {
-              name: currentChunk.toolName,
-              arguments: currentChunk.text,
-              xml_tag_name: currentChunk.toolName,
-            };
-
-            updatePlaybackState({
-              currentToolCall: toolCall,
-              toolPlaybackIndex: toolPlaybackIndex + 1,
-            });
-
-            if (!isSidePanelOpen) {
-              onToggleSidePanel();
-            }
-
-            setCurrentToolIndex(toolPlaybackIndex + 1);
-
-            // Pause streaming briefly while showing the tool
-            isPaused = true;
-            setTimeout(() => {
-              isPaused = false;
-              updatePlaybackState({ currentToolCall: null });
-              chunkIndex++; // Move to next chunk
-              currentIndex = 0; // Reset index for next chunk
-              processNextCharacter();
-            }, 500); // Reduced from 1500ms to 500ms pause for tool display
-
-            return;
+          if (isToolInitialized) {
+            // TODO: better to change tool index by uniq tool id
+            setCurrentToolIndex((prev) => prev + 1);
+          } else {
+            setIsToolInitialized(true);
           }
+
+          // Pause streaming briefly while showing the tool
+          isPaused = true;
+          setTimeout(() => {
+            isPaused = false;
+            updatePlaybackState({ currentToolCall: null });
+            chunkIndex++; // Move to next chunk
+            currentIndex = 0; // Reset index for next chunk
+            processNextCharacter();
+          }, 500); // Reduced from 1500ms to 500ms pause for tool display
+
+          return;
         }
 
         // Handle normal text streaming for non-tool chunks or visible tool chunks
@@ -326,7 +363,6 @@ export const PlaybackControls = ({
       isPlaying,
       messages,
       currentMessageIndex,
-      toolPlaybackIndex,
       setCurrentToolIndex,
       isSidePanelOpen,
       onToggleSidePanel,
@@ -335,84 +371,150 @@ export const PlaybackControls = ({
     ],
   );
 
-  // Main playback function
+  // Main playback function - ONLY triggers when play/pause changes
   useEffect(() => {
     if (!isPlaying || messages.length === 0) return;
 
-    let playbackTimeout: NodeJS.Timeout;
-    let cleanupStreaming: (() => void) | undefined;
+    let isCancelled = false;
 
-    const playbackNextMessage = async () => {
-      // Ensure we're within bounds
-      if (currentMessageIndex >= messages.length) {
-        updatePlaybackState({ isPlaying: false });
-        return;
-      }
+    const runPlaybackLoop = async () => {
+      while (!isCancelled && playbackStateRef.current.isPlaying) {
+        const state = playbackStateRef.current;
+        const msgIndex = state.currentMessageIndex;
 
-      const currentMessage = messages[currentMessageIndex];
-      console.log(
-        `Playing message ${currentMessageIndex}:`,
-        currentMessage.type,
-        currentMessage.message_id,
-      );
-
-      // If it's an assistant message, stream it
-      if (currentMessage.type === 'assistant') {
-        try {
-          // Parse the content if it's JSON
-          let content = currentMessage.content;
-          try {
-            const parsed = JSON.parse(content);
-            if (parsed.content) {
-              content = parsed.content;
-            }
-          } catch (e) {
-            // Not JSON, use as is
-          }
-
-          // Stream the message content
-          await new Promise<void>((resolve) => {
-            cleanupStreaming = streamText(content, resolve);
-          });
-        } catch (error) {
-          console.error('Error streaming message:', error);
+        // Check if we're done
+        if (msgIndex >= messages.length) {
+          setPlaybackState(prev => ({ ...prev, isPlaying: false }));
+          break;
         }
-      } else {
-        // For non-assistant messages, just add them to visible messages
-        updatePlaybackState({
-          visibleMessages: [...visibleMessages, currentMessage],
-        });
 
-        // Wait a moment before showing the next message
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        const currentMessage = messages[msgIndex];
+
+        // Skip if this message is already visible (happens with first message on autoplay)
+        const isAlreadyVisible = state.visibleMessages.some(
+          (m) => m.message_id === currentMessage.message_id
+        );
+
+        if (isAlreadyVisible && msgIndex === 0) {
+          // First message already visible, just move to next
+          setPlaybackState(prev => ({
+            ...prev,
+            currentMessageIndex: prev.currentMessageIndex + 1,
+          }));
+          await new Promise(resolve => setTimeout(resolve, 100));
+          continue;
+        }
+
+        // If it's an assistant message, stream it
+        if (currentMessage.type === 'assistant') {
+          try {
+            // Extract text from metadata.text_content
+            const metadata = typeof currentMessage.metadata === 'string' 
+              ? JSON.parse(currentMessage.metadata) 
+              : currentMessage.metadata;
+            const textToStream = metadata?.text_content || '';
+
+            // Stream the message content and wait for completion
+            let cleanup: (() => void) | undefined;
+            await new Promise<void>((resolve) => {
+              cleanup = streamText(textToStream, () => {
+                console.log('Stream completed for message', msgIndex);
+                resolve();
+              });
+            });
+
+            if (cleanup && isCancelled) {
+              cleanup();
+            }
+          } catch (error) {
+            console.error('Error streaming message:', error);
+          }
+        } else {
+          // For non-assistant messages, just add them to visible messages
+          setPlaybackState(prev => ({
+            ...prev,
+            visibleMessages: [...prev.visibleMessages, currentMessage],
+          }));
+
+          // Wait a moment before showing the next message
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+
+        if (isCancelled) break;
+
+        // Move to the next message
+        setPlaybackState(prev => ({
+          ...prev,
+          currentMessageIndex: prev.currentMessageIndex + 1,
+        }));
+
+        // Longer delay between messages to prevent infinite loop
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
-
-      // Move to the next message
-      updatePlaybackState({
-        currentMessageIndex: currentMessageIndex + 1,
-      });
     };
 
-    // Start playback with a small delay
-    playbackTimeout = setTimeout(playbackNextMessage, 500);
+    runPlaybackLoop();
 
     return () => {
-      clearTimeout(playbackTimeout);
-      if (cleanupStreaming) cleanupStreaming();
+      isCancelled = true;
     };
-  }, [
-    isPlaying,
-    currentMessageIndex,
-    messages,
-    streamText,
-    updatePlaybackState,
-    visibleMessages,
-  ]);
+  }, [isPlaying, messages, streamText]);
 
   // Floating playback controls position based on side panel state
   const controlsPositionClass = isSidePanelOpen
     ? 'left-1/2 -translate-x-1/4 sm:left-[calc(50%-225px)] md:left-[calc(50%-250px)] lg:left-[calc(50%-275px)] xl:left-[calc(50%-325px)]'
     : 'left-1/2 -translate-x-1/2';
+
+  const PlayButton = useCallback(
+    () => (
+      <Button
+        variant="ghost"
+        disabled={currentMessageIndex === messages.length}
+        size="icon"
+        onClick={togglePlayback}
+        className="h-8 w-8"
+        aria-label={isPlaying ? 'Pause Replay' : 'Play Replay'}
+      >
+        {isPlaying ? (
+          <Pause className="h-4 w-4" />
+        ) : (
+          <Play className="h-4 w-4" />
+        )}
+      </Button>
+    ),
+    [isPlaying, togglePlayback, currentMessageIndex, messages],
+  );
+
+  const ForwardButton = useCallback(
+    () => (
+      <Button
+        variant="ghost"
+        size="icon"
+        onClick={() => forward(1)}
+        disabled={currentMessageIndex === messages.length}
+        className="h-8 w-8"
+      >
+        <ArrowUp className="h-4 w-4 rotate-90" />
+      </Button>
+    ),
+    [currentMessageIndex, messages, forward],
+  );
+
+  const ResetButton = useCallback(
+    () => (
+      <Button
+        variant="ghost"
+        size="icon"
+        disabled={currentMessageIndex === 0}
+        onClick={resetPlayback}
+        className="h-8 w-8"
+        aria-label="Restart Replay"
+      >
+        <ArrowDown className="h-4 w-4 rotate-90" />
+      </Button>
+    ),
+    [currentMessageIndex, resetPlayback],
+  );
 
   // Header with playback controls
   const renderHeader = useCallback(
@@ -423,13 +525,7 @@ export const PlaybackControls = ({
             <div className="flex items-center gap-2">
               <div className="flex items-center justify-center w-6 h-6 rounded-md overflow-hidden bg-primary/10">
                 <Link href="/">
-                  <img
-                    src="/kortix-symbol.svg"
-                    alt="Kortix"
-                    width={16}
-                    height={16}
-                    className="object-contain"
-                  />
+                  <KortixLogo size={14} />
                 </Link>
               </div>
               <h1>
@@ -440,37 +536,9 @@ export const PlaybackControls = ({
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={onFileViewerOpen}
-              className="h-8 w-8"
-              aria-label="View Files"
-            >
-              <FileText className="h-4 w-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={togglePlayback}
-              className="h-8 w-8"
-              aria-label={isPlaying ? 'Pause Replay' : 'Play Replay'}
-            >
-              {isPlaying ? (
-                <Pause className="h-4 w-4" />
-              ) : (
-                <Play className="h-4 w-4" />
-              )}
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={resetPlayback}
-              className="h-8 w-8"
-              aria-label="Restart Replay"
-            >
-              <ArrowDown className="h-4 w-4 rotate-90" />
-            </Button>
+            <PlayButton />
+            <ResetButton />
+            <ForwardButton />
             <Button
               variant="ghost"
               size="icon"
@@ -478,20 +546,19 @@ export const PlaybackControls = ({
               className={`h-8 w-8 ${isSidePanelOpen ? 'text-primary' : ''}`}
               aria-label="Toggle Tool Panel"
             >
-              <Info className="h-4 w-4" />
+              <PanelRightOpen className="h-4 w-4" />
             </Button>
           </div>
         </div>
       </div>
     ),
     [
-      isPlaying,
       isSidePanelOpen,
-      onFileViewerOpen,
       onToggleSidePanel,
       projectName,
-      resetPlayback,
-      togglePlayback,
+      PlayButton,
+      ResetButton,
+      ForwardButton,
     ],
   );
 
@@ -503,38 +570,15 @@ export const PlaybackControls = ({
             className={`fixed bottom-4 z-10 transform bg-background/90 backdrop-blur rounded-full border shadow-md px-3 py-1.5 transition-all duration-200 ${controlsPositionClass}`}
           >
             <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={togglePlayback}
-                className="h-8 w-8"
-              >
-                {isPlaying ? (
-                  <Pause className="h-4 w-4" />
-                ) : (
-                  <Play className="h-4 w-4" />
-                )}
-              </Button>
-
+              <PlayButton />
               <div className="flex items-center text-xs text-muted-foreground">
                 <span>
-                  {Math.min(
-                    currentMessageIndex + (isStreamingText ? 0 : 1),
-                    messages.length,
-                  )}
-                  /{messages.length}
+                  {Math.max(1, Math.min(currentMessageIndex, messages.length))}/
+                  {messages.length}
                 </span>
               </div>
-
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={resetPlayback}
-                className="h-8 w-8"
-              >
-                <ArrowDown className="h-4 w-4 rotate-90" />
-              </Button>
-
+              <ResetButton />
+              <ForwardButton />
               <Button
                 variant="ghost"
                 size="sm"
@@ -551,12 +595,11 @@ export const PlaybackControls = ({
     [
       controlsPositionClass,
       currentMessageIndex,
-      isPlaying,
-      isStreamingText,
       messages.length,
-      resetPlayback,
       skipToEnd,
-      togglePlayback,
+      PlayButton,
+      ResetButton,
+      ForwardButton,
     ],
   );
 
@@ -606,6 +649,7 @@ export const PlaybackControls = ({
     togglePlayback,
     resetPlayback,
     skipToEnd,
+    forward,
   };
 };
 

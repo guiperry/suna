@@ -10,6 +10,7 @@ import React, {
 import { createClient } from '@/lib/supabase/client';
 import { User, Session } from '@supabase/supabase-js';
 import { SupabaseClient } from '@supabase/supabase-js';
+import { clearUserLocalStorage } from '@/lib/utils/clear-local-storage';
 
 type AuthContextType = {
   supabase: SupabaseClient;
@@ -29,34 +30,54 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   useEffect(() => {
     const getInitialSession = async () => {
-      const {
-        data: { session: currentSession },
-      } = await supabase.auth.getSession();
-      setSession(currentSession);
-      setUser(currentSession?.user ?? null);
-      setIsLoading(false);
+      try {
+        const {
+          data: { session: currentSession },
+        } = await supabase.auth.getSession();
+        setSession(currentSession);
+        setUser(currentSession?.user ?? null);
+      } catch (error) {
+      } finally {
+        setIsLoading(false);
+      }
     };
 
     getInitialSession();
 
     const { data: authListener } = supabase.auth.onAuthStateChange(
-      (_event, newSession) => {
+      async (event, newSession) => {
         setSession(newSession);
         setUser(newSession?.user ?? null);
-        // No need to set loading state here as initial load is done
-        // and subsequent changes shouldn't show a loading state for the whole app
+
         if (isLoading) setIsLoading(false);
+        switch (event) {
+          case 'SIGNED_IN':
+            break;
+          case 'SIGNED_OUT':
+            clearUserLocalStorage();
+            break;
+          case 'TOKEN_REFRESHED':
+            break;
+          case 'MFA_CHALLENGE_VERIFIED':
+            break;
+          default:
+        }
       },
     );
 
     return () => {
       authListener?.subscription.unsubscribe();
     };
-  }, [supabase, isLoading]); // Added isLoading to dependencies to ensure it runs once after initial load completes
+  }, [supabase]); // Removed isLoading from dependencies to prevent infinite loops
 
   const signOut = async () => {
-    await supabase.auth.signOut();
-    // State updates will be handled by onAuthStateChange
+    try {
+      await supabase.auth.signOut();
+      // Clear local storage after successful sign out
+      clearUserLocalStorage();
+    } catch (error) {
+      console.error('❌ Error signing out:', error);
+    }
   };
 
   const value = {
@@ -70,7 +91,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
 
-export const useAuth = (): AuthContextType => {
+export const useAuth = () => {
   const context = useContext(AuthContext);
   if (context === undefined) {
     throw new Error('useAuth must be used within an AuthProvider');

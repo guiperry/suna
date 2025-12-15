@@ -1,7 +1,12 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, memo } from 'react';
 import { Mic, Square, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { useTranscription } from '@/hooks/react-query/transcription/use-transcription';
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipTrigger,
+} from '@/components/ui/tooltip';
+import { useTranscription } from '@/hooks/transcription/use-transcription';
 
 interface VoiceRecorderProps {
     onTranscription: (text: string) => void;
@@ -10,10 +15,10 @@ interface VoiceRecorderProps {
 
 const MAX_RECORDING_TIME = 15 * 60 * 1000; // 15 minutes in milliseconds
 
-export const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
+export const VoiceRecorder: React.FC<VoiceRecorderProps> = memo(function VoiceRecorder({
     onTranscription,
     disabled = false,
-}) => {
+}) {
     const [state, setState] = useState<'idle' | 'recording' | 'processing'>('idle');
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const chunksRef = useRef<Blob[]>([]);
@@ -28,7 +33,6 @@ export const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
         if (state === 'recording') {
             recordingStartTimeRef.current = Date.now();
             maxTimeoutRef.current = setTimeout(() => {
-                console.log('Auto-stopping recording after 15 minutes');
                 stopRecording();
             }, MAX_RECORDING_TIME);
         } else {
@@ -136,37 +140,50 @@ export const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
     const getButtonClass = () => {
         switch (state) {
             case 'recording':
-                return 'text-red-500 hover:bg-red-600';
+                return 'text-red-500 hover:bg-red-50 hover:text-red-600';
             case 'processing':
-                return 'hover:bg-gray-100';
+                return '';
             default:
-                return 'hover:bg-gray-100';
+                return '';
         }
     };
 
     const getIcon = () => {
         switch (state) {
             case 'recording':
-                return <Square className="h-4 w-4" />;
+                return <Square className="h-5 w-5" />;
             case 'processing':
-                return <Loader2 className="h-4 w-4 animate-spin" />;
+                return <Loader2 className="h-5 w-5 animate-spin" />;
             default:
-                return <Mic className="h-4 w-4" />;
+                return <Mic className="h-5 w-5" />;
         }
     };
 
     return (
-        <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={handleClick}
-            onContextMenu={handleRightClick}
-            disabled={disabled || state === 'processing'}
-            className={`h-8 w-8 p-0 transition-colors ${getButtonClass()}`}
-            title={state === 'recording' ? 'Click to stop' : 'Click to start recording'}
-        >
-            {getIcon()}
-        </Button>
+        <Tooltip>
+            <TooltipTrigger asChild>
+                <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleClick}
+                    onContextMenu={handleRightClick}
+                    disabled={disabled || state === 'processing'}
+                    className={`h-10 px-2 py-2 bg-transparent border-[1.5px] border-border rounded-2xl text-muted-foreground hover:text-foreground hover:bg-accent/50 flex items-center gap-2 transition-colors ${getButtonClass()}`}
+                >
+                    {getIcon()}
+                </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="text-xs">
+                <p>
+                    {state === 'recording'
+                        ? 'Click to stop recording'
+                        : state === 'processing'
+                            ? 'Processing...'
+                            : 'Record voice message'
+                    }
+                </p>
+            </TooltipContent>
+        </Tooltip>
     );
-}; 
+}); 
