@@ -1,7 +1,7 @@
 import React from 'react';
 import { useQuery, useQueries } from '@tanstack/react-query';
 
-const API_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000/api';
+const API_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '';
 
 export interface FeatureFlag {
   flag_name: string;
