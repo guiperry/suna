@@ -315,16 +315,17 @@ class SetupWizard:
         self.env_vars = {
             "setup_method": None,
             "supabase_setup_method": None,
-            "supabase": existing_env_vars["supabase"],
-            "daytona": existing_env_vars["daytona"],
-            "llm": existing_env_vars["llm"],
-            "search": existing_env_vars["search"],
-            "rapidapi": existing_env_vars["rapidapi"],
+            # Use .get() to avoid KeyError if any sections are missing from parsed .env files
+            "supabase": existing_env_vars.get("supabase", {}),
+            "daytona": existing_env_vars.get("daytona", {}),
+            "llm": existing_env_vars.get("llm", {}),
+            "search": existing_env_vars.get("search", {}),
+            "rapidapi": existing_env_vars.get("rapidapi", {}),
             "cron": existing_env_vars.get("cron", {}),
-            "webhook": existing_env_vars["webhook"],
-            "mcp": existing_env_vars["mcp"],
-            "composio": existing_env_vars["composio"],
-            "kortix": existing_env_vars["kortix"],
+            "webhook": existing_env_vars.get("webhook", {}),
+            "mcp": existing_env_vars.get("mcp", {}),
+            "composio": existing_env_vars.get("composio", {}),
+            "kortix": existing_env_vars.get("kortix", {}),
             "vapi": existing_env_vars.get("vapi", {}),
             "stripe": existing_env_vars.get("stripe", {}),
             "langfuse": existing_env_vars.get("langfuse", {}),
@@ -520,14 +521,47 @@ class SetupWizard:
                 self.final_instructions()
                 return
             elif choice == "3":
+                # Provide options rather than immediately deleting progress
                 print_info("Re-running setup wizard...")
-                # Delete progress file and reset
-                if os.path.exists(PROGRESS_FILE):
-                    os.remove(PROGRESS_FILE)
-                self.env_vars = {}
-                self.total_steps = 17
-                self.current_step = 0
-                # Continue with normal setup
+                print()
+                print("How would you like to proceed?")
+                print("[1] Reset progress and re-run entire setup (delete .setup_progress)")
+                print("[2] Edit saved setup configuration")
+                print("[3] Resume setup from saved progress (no reset)")
+                print("[4] Cancel")
+                sub = input("Enter your choice (1-4): ").strip()
+
+                if sub == "1":
+                    confirm = input("Are you sure you want to reset all saved progress? This will delete .setup_progress. [y/N] ").strip().lower()
+                    if confirm == "y":
+                        if os.path.exists(PROGRESS_FILE):
+                            os.remove(PROGRESS_FILE)
+                        self.env_vars = {}
+                        self.total_steps = 17
+                        self.current_step = 0
+                        print_info("Progress reset. Re-running setup.")
+                        # Continue with normal setup
+                    else:
+                        print_info("Reset cancelled. Exiting.")
+                        return
+
+                elif sub == "2":
+                    # Open interactive editor for saved config
+                    self.edit_saved_setup()
+                    # After editing, ask whether to resume now
+                    cont = input("Would you like to resume the setup now? [Y/n] ").strip().lower()
+                    if cont == "n":
+                        print_info("You can resume setup later by running this script again.")
+                        return
+                    # else continue with current progress
+
+                elif sub == "3":
+                    print_info("Resuming setup from saved progress...")
+                    # Nothing to change; the run loop will skip completed steps
+
+                else:
+                    print_info("Cancelled. Exiting.")
+                    return
             elif choice == "4":
                 print_info("Exiting...")
                 return
@@ -605,6 +639,93 @@ class SetupWizard:
                 f"Continuing with '{self.env_vars['setup_method']}' setup method."
             )
             return
+
+    def edit_saved_setup(self):
+        """Interactively edit the saved setup configuration and persist changes."""
+        print_step("E", self.total_steps, "Edit Saved Setup Configuration")
+
+        # Ensure supabase dict exists
+        if "supabase" not in self.env_vars or not isinstance(self.env_vars["supabase"], dict):
+            self.env_vars["supabase"] = {}
+
+        while True:
+            print()
+            print("Which section would you like to edit?")
+            print("[1] Setup Method (current: {})".format(self.env_vars.get("setup_method")))
+            print("[2] Supabase settings")
+            print("[3] View current saved config")
+            print("[4] Save and return")
+            print("[5] Cancel (discard changes)")
+
+            choice = input("Enter your choice (1-5): ").strip()
+
+            if choice == "1":
+                val = input("Enter setup method ('manual' or 'docker') [current: {}]: ".format(self.env_vars.get("setup_method", "manual"))).strip().lower()
+                if val in ("manual", "docker"):
+                    self.env_vars["setup_method"] = val
+                    print_success(f"Set setup_method to '{val}'")
+                else:
+                    print_warning("Invalid value; must be 'manual' or 'docker'.")
+
+            elif choice == "2":
+                sup = self.env_vars.setdefault("supabase", {})
+                # URL
+                url = input(f"Supabase Project URL [current: {sup.get('SUPABASE_URL','')}]: ").strip()
+                if url:
+                    if validate_url(url):
+                        sup["SUPABASE_URL"] = url
+                        sup["NEXT_PUBLIC_SUPABASE_URL"] = url
+                        sup["EXPO_PUBLIC_SUPABASE_URL"] = url
+                        print_success("Supabase URL updated.")
+                    else:
+                        print_warning("Invalid URL; changes not saved.")
+                # anon key
+                anon = input("Supabase anon/public key (leave blank to keep current): ").strip()
+                if anon:
+                    if validate_supabase_jwt_key(anon):
+                        sup["SUPABASE_ANON_KEY"] = anon
+                        print_success("Supabase anon key updated.")
+                    else:
+                        print_warning("Invalid anon key; changes not saved.")
+                # service role
+                svc = input("Supabase service_role key (leave blank to keep current): ").strip()
+                if svc:
+                    if validate_supabase_jwt_key(svc):
+                        sup["SUPABASE_SERVICE_ROLE_KEY"] = svc
+                        print_success("Supabase service role key updated.")
+                    else:
+                        print_warning("Invalid service role key; changes not saved.")
+                # jwt secret
+                jwt = input("Supabase JWT secret (leave blank to keep current): ").strip()
+                if jwt:
+                    if validate_api_key(jwt):
+                        sup["SUPABASE_JWT_SECRET"] = jwt
+                        print_success("Supabase JWT secret updated.")
+                    else:
+                        print_warning("JWT secret looks invalid; changes not saved.")
+
+            elif choice == "3":
+                print_info("Current saved configuration:")
+                # Pretty print a subset of config
+                sup = self.env_vars.get("supabase", {})
+                print(f"  setup_method: {self.env_vars.get('setup_method')}")
+                print(f"  supabase.SUPABASE_URL: {sup.get('SUPABASE_URL','')}")
+                print(f"  supabase.SUPABASE_ANON_KEY: {mask_sensitive_value(sup.get('SUPABASE_ANON_KEY',''))}")
+                print(f"  supabase.SUPABASE_SERVICE_ROLE_KEY: {mask_sensitive_value(sup.get('SUPABASE_SERVICE_ROLE_KEY',''))}")
+                print(f"  supabase.SUPABASE_JWT_SECRET: {mask_sensitive_value(sup.get('SUPABASE_JWT_SECRET',''))}")
+
+            elif choice == "4":
+                # Save progress (keep current_step untouched)
+                save_progress(self.current_step, self.env_vars)
+                print_success("Saved edited configuration to .setup_progress.")
+                return
+
+            elif choice == "5":
+                print_info("Edit cancelled; no changes saved.")
+                return
+
+            else:
+                print_warning("Invalid choice. Please select a valid option.")
 
         print_info(
             "You can start Kortix Super Worker using either Docker Compose or by manually starting the services."
@@ -966,17 +1087,25 @@ class SetupWizard:
         print_info("  - JWT Secret (under 'JWT Settings' - critical for security!)")
         input("Press Enter to continue once you have your project details...")
 
-            # Check if existing keys are valid
-            existing_anon = self.env_vars["supabase"]["SUPABASE_ANON_KEY"]
-            existing_service = self.env_vars["supabase"]["SUPABASE_SERVICE_ROLE_KEY"]
+        # Check if existing keys are valid and warn the user
+        existing_anon = self.env_vars["supabase"]["SUPABASE_ANON_KEY"]
+        existing_service = self.env_vars["supabase"]["SUPABASE_SERVICE_ROLE_KEY"]
 
-            if existing_anon and not validate_supabase_jwt_key(existing_anon):
-                print_warning(f"Your existing SUPABASE_ANON_KEY appears invalid (length: {len(existing_anon)})")
-                print_warning("It should be a JWT token starting with 'eyJ' and be 100+ characters long.")
+        if existing_anon and not validate_supabase_jwt_key(existing_anon):
+            print_warning(
+                f"Your existing SUPABASE_ANON_KEY appears invalid (length: {len(existing_anon)})"
+            )
+            print_warning(
+                "It should be a JWT token starting with 'eyJ' and be 100+ characters long."
+            )
 
-            if existing_service and not validate_supabase_jwt_key(existing_service):
-                print_warning(f"Your existing SUPABASE_SERVICE_ROLE_KEY appears invalid (length: {len(existing_service)})")
-                print_warning("It should be a JWT token starting with 'eyJ' and be 100+ characters long.")
+        if existing_service and not validate_supabase_jwt_key(existing_service):
+            print_warning(
+                f"Your existing SUPABASE_SERVICE_ROLE_KEY appears invalid (length: {len(existing_service)})"
+            )
+            print_warning(
+                "It should be a JWT token starting with 'eyJ' and be 100+ characters long."
+            )
 
         # Collect URL
         self.env_vars["supabase"]["SUPABASE_URL"] = self._get_input(
@@ -996,7 +1125,6 @@ class SetupWizard:
             f"  • Be at least 100 characters long (typically 200+)\n"
             f"  • Find it in: Supabase Dashboard → Settings → API → Project API keys → anon/public",
             default_value=self.env_vars["supabase"]["SUPABASE_ANON_KEY"],
-            "Invalid URL format. Please enter a valid URL.",
         )
         
         # Extract and store project reference for CLI operations
@@ -1017,12 +1145,6 @@ class SetupWizard:
         self.env_vars["supabase"]["NEXT_PUBLIC_SUPABASE_URL"] = self.env_vars["supabase"]["SUPABASE_URL"]
         self.env_vars["supabase"]["EXPO_PUBLIC_SUPABASE_URL"] = self.env_vars["supabase"]["SUPABASE_URL"]
         
-        self.env_vars["supabase"]["SUPABASE_ANON_KEY"] = self._get_input(
-            "Enter your Supabase anon key: ",
-            validate_api_key,
-            "This does not look like a valid key. It should be at least 10 characters.",
-        )
-
         # Collect service_role key with improved validation
         self.env_vars["supabase"]["SUPABASE_SERVICE_ROLE_KEY"] = self._get_input(
             "Enter your Supabase service_role key (JWT token): ",
@@ -1036,16 +1158,15 @@ class SetupWizard:
             default_value=self.env_vars["supabase"]["SUPABASE_SERVICE_ROLE_KEY"],
         )
 
-        print_success("Supabase information saved and validated.")
-            "Enter your Supabase service role key: ",
-            validate_api_key,
-            "This does not look like a valid key. It should be at least 10 characters.",
-        )
+        # Collect JWT secret
         self.env_vars["supabase"]["SUPABASE_JWT_SECRET"] = self._get_input(
             "Enter your Supabase JWT secret (for signature verification): ",
             validate_api_key,
             "This does not look like a valid JWT secret. It should be at least 10 characters.",
+            default_value=self.env_vars["supabase"].get("SUPABASE_JWT_SECRET", ""),
         )
+
+        print_success("Supabase information saved.")
         # Validate that all required Supabase configuration is present
         if not self.env_vars["supabase"]["SUPABASE_URL"]:
             print_error("SUPABASE_URL is required for database connectivity.")
@@ -1581,6 +1702,11 @@ class SetupWizard:
 
         # Always use localhost for the base .env file
         supabase_url = self.env_vars["supabase"].get("SUPABASE_URL", "")
+
+        # Ensure SUPABASE_JWT_SECRET exists for local setups (auto-generate if missing)
+        if self.env_vars.get("setup_method") == "manual" and not self.env_vars["supabase"].get("SUPABASE_JWT_SECRET"):
+            print_info("Generating a local SUPABASE_JWT_SECRET for development (saved to backend/.env)")
+            self.env_vars["supabase"]["SUPABASE_JWT_SECRET"] = generate_encryption_key()
 
         backend_env = {
             "ENV_MODE": "local",
